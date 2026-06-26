@@ -15,6 +15,7 @@ Useful commands:
 ```bash
 python3 scripts/setup_vault.py --vault <path> --profile auto
 python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube>
+python3 scripts/ghpf_wiki.py video-frames --vault <path> --source <youtube-or-video-or-image> --ingest --figure-card
 python3 scripts/ghpf_wiki.py card --vault <path> --type paper --all-sources
 python3 scripts/ghpf_wiki.py index --vault <path>
 python3 scripts/ghpf_wiki.py insight --vault <path> --type experiment --query "<topic>"
@@ -32,6 +33,7 @@ For Claude Code slash-command style use, say:
 
 - `/ghpf-setup` to initialize or repair a vault
 - `/ghpf-extract` to extract PDF, web, local HTML, or YouTube transcript sources
+- `/ghpf-video-frames` to sample YouTube/local-video/image frames into visual evidence notes
 - `/ghpf-ingest` to turn sources into wiki notes
 - `/ghpf-query` to answer from the wiki
 - `/ghpf-context` to create an agent handoff pack

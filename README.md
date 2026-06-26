@@ -60,6 +60,14 @@ python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest https://example
 python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest https://www.youtube.com/watch?v=<id>
 ```
 
+Sample and analyze YouTube, local video, or image frames as visual evidence:
+
+```bash
+python3 scripts/ghpf_wiki.py video-frames --vault ./my-vault --source https://www.youtube.com/watch?v=<id> --every-seconds 30 --max-frames 12 --ingest --figure-card
+python3 scripts/ghpf_wiki.py video-frames --vault ./my-vault --source ./chart-frame.png --ingest --figure-card
+python3 scripts/ghpf_wiki.py video-frames --vault ./my-vault --source ./strategy-video.mp4 --ocr --ingest --figure-card
+```
+
 Track the Karpathy-style pipeline so steps are not skipped:
 
 ```bash
@@ -169,7 +177,9 @@ For paper, experiment, and trading strategy insight, use cards first. `card` cre
 
 For figure work, use `figure-card` to capture reusable figure patterns, `figure-insight` to design panels from data goals and evidence, and `figure-export` to generate final-size Matplotlib code plus PDF/SVG/PNG outputs.
 
-PDF extraction uses `pypdf` or `PyPDF2`. Web extraction uses Python's standard library. YouTube transcript extraction uses `youtube_transcript_api`, `yt-dlp`, or `uvx yt-dlp` when available. OCR, office parsing, and browser automation remain optional capabilities. `capabilities` reports what is available on the current machine so another user can clone the repo and let the workflow adapt to their environment.
+For video/image visual evidence, `video-frames` stores sampled frames in `raw/figures/video-frames/`, writes a frame-analysis Markdown source, can ingest it into `wiki/sources/`, and can create a figure card for later `figure-insight` work.
+
+PDF extraction uses `pypdf` or `PyPDF2`. Web extraction uses Python's standard library. YouTube transcript extraction uses `youtube_transcript_api`, `yt-dlp`, or `uvx yt-dlp` when available. YouTube/local-video frame extraction requires `ffmpeg`; YouTube frame download also requires `yt-dlp` or `uvx yt-dlp`. Local image analysis uses Pillow when available. OCR, office parsing, and browser automation remain optional capabilities. `capabilities` reports what is available on the current machine so another user can clone the repo and let the workflow adapt to their environment.
 
 ## Cache Policy
 

@@ -8,6 +8,7 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 - Treat `graph_imports/` as non-canonical Graphify reference material. Promote durable findings into `wiki/` before relying on them as maintained knowledge.
 - Treat `wiki/cards/` as the reusable structure for paper, experiment, and strategy insight work.
 - Treat `wiki/cards/figures/` and `wiki/figure-designs/` as the reusable structure for manuscript, experiment, and trading chart figure design.
+- Treat `raw/figures/video-frames/` as preserved visual evidence sampled from YouTube, local videos, and image files.
 - Use `[[wikilinks]]` for durable cross-references.
 - Put immutable source copies in `raw/`; `_raw/` is supported for Obsidian capture compatibility.
 - Put bulk Graphify intake in `raw/graphify_articles/`; normal `ingest` skips that folder.
@@ -15,20 +16,20 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 - Put graph, retrieval, context-pack, cache, export, and task-ledger artifacts under `swarmvault/`.
 - Do not rewrite user notes broadly. Merge focused changes and preserve provenance.
 - For setup, run `python3 scripts/setup_vault.py --vault <path> --profile auto`.
-- For extract/ingest/card/index/search/insight/evaluate/figure-card/figure-insight/figure-export/lint/quality/diff/state/link-audit/link-strengthen/graphify-import/cache-clean/file-back/graph/context/task sidecar work, run `python3 scripts/ghpf_wiki.py --help`.
+- For extract/video-frames/ingest/card/index/search/insight/evaluate/figure-card/figure-insight/figure-export/lint/quality/diff/state/link-audit/link-strengthen/graphify-import/cache-clean/file-back/graph/context/task sidecar work, run `python3 scripts/ghpf_wiki.py --help`.
 - Treat YouTube transcript, OCR, office document, and browser automation support as optional environment capabilities. Check `python3 scripts/ghpf_wiki.py capabilities --vault <path>` before assuming they are installed.
 
 ## Expected Workflow
 
 1. Detect or select a profile: `research`, `trading`, `codebase`, `mixed`, or `general`.
 2. Create missing vault folders.
-3. Extract PDF, web, local HTML, and YouTube transcript sources into Markdown when needed.
+3. Extract PDF, web, local HTML, YouTube transcript, and video/image frame sources into Markdown when needed.
 4. Ingest sources into concise source notes and update `wiki/manifest.json`.
 5. Track the pipeline with `state` so setup, ingest, compile, lint, strengthen, file-back, graph, and context work are not skipped.
 6. Extract durable concepts, entities, methods, strategies, claims, and open questions.
 7. Create `paper`, `experiment`, or `strategy` cards before deep insight work.
 8. Build `index`, run `search`, and use `insight` for evidence-backed synthesis.
-9. Use `figure-card`, `figure-insight`, and `figure-export` when the task asks for manuscript figures, experiment diagnostics, or trading chart design.
+9. Use `video-frames` before `figure-card`, `figure-insight`, and `figure-export` when the task depends on chart screenshots, slides, or video frames.
 10. Link notes with `[[wikilinks]]`.
 11. Run `quality`, `lint`, `link-audit`, and `evaluate`; use `link-strengthen` when a note needs more useful cross-links.
 12. For bulk Graphify maps, import `graph.json` into `graph_imports/` and search it as broad context, not as canonical truth.

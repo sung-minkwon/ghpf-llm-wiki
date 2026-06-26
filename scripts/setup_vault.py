@@ -41,6 +41,7 @@ Profile: `{profile}`
 
 - `raw/`: immutable source copies and intake material.
 - `raw/figures/`: copied or extracted figure image assets and chart references.
+- `raw/figures/video-frames/`: sampled YouTube/local-video frames for visual evidence.
 - `raw/graphify_articles/`: bulk Graphify intake; normal `ingest` skips this folder.
 - `_raw/`: compatibility intake folder for Obsidian-style capture tools.
 - `wiki/`: compiled Markdown knowledge maintained by agents and humans.
@@ -54,6 +55,7 @@ Profile: `{profile}`
 - `schema/`: wiki operating rules and validation expectations.
 - `graph_imports/`: imported Graphify reference layers. Treat these as useful maps, not canonical notes.
 - `swarmvault/`: graph, hybrid index, context-pack, task-ledger, evaluation, and export sidecar artifacts.
+- `swarmvault/exports/video-frames/`: frame-analysis manifests.
 - `swarmvault/cache/`: temporary sidecar cache. Safe to prune with `cache-clean`.
 
 ## Operating Rules
@@ -69,6 +71,7 @@ Profile: `{profile}`
 9. Preserve `raw/` and `wiki/`; prune only cache/export artifacts with explicit cache commands.
 10. Prefer cards and hybrid search for insight work; avoid rereading full sources unless needed.
 11. For figure work, store reusable design evidence in `wiki/cards/figures/` and exported code/output in `swarmvault/exports/figures/`.
+12. For video or image frame work, preserve sampled frames under `raw/figures/video-frames/` and analysis manifests under `swarmvault/exports/video-frames/`.
 """
 
 
@@ -121,6 +124,7 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
                 "vault_root": str(vault.resolve()),
                 "raw_dir": "raw",
                 "figures_raw_dir": "raw/figures",
+                "video_frames_raw_dir": "raw/figures/video-frames",
                 "graphify_raw_dir": "raw/graphify_articles",
                 "capture_dir": "_raw",
                 "wiki_dir": "wiki",
@@ -133,6 +137,7 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
                 "hybrid_index_dir": "swarmvault/state/hybrid-index",
                 "evaluations_dir": "swarmvault/evaluations",
                 "figure_exports_dir": "swarmvault/exports/figures",
+                "video_frame_exports_dir": "swarmvault/exports/video-frames",
                 "cache_dir": "swarmvault/cache",
                 "cache_policy": {"max_age_days": 30, "keep_latest": 10},
                 "created_at": now,

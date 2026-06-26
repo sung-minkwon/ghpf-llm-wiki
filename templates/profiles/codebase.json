@@ -4,6 +4,7 @@
   "folders": [
     "_raw",
     "raw/figures",
+    "raw/figures/video-frames",
     "raw/graphify_articles",
     "graph_imports",
     "wiki/sources",
@@ -27,6 +28,7 @@
     "swarmvault/task-ledger",
     "swarmvault/evaluations",
     "swarmvault/exports/figures",
+    "swarmvault/exports/video-frames",
     "swarmvault/exports"
   ]
 }

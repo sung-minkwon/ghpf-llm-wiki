@@ -57,6 +57,12 @@ For PDF, web page, local HTML, or YouTube transcript sources, extract and ingest
 python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube>
 ```
 
+For YouTube, local video, or image visual evidence, sample frames, analyze them, ingest the generated Markdown, and create a figure card:
+
+```bash
+python3 scripts/ghpf_wiki.py video-frames --vault <path> --source <youtube-or-video-or-image> --every-seconds 30 --max-frames 12 --ingest --figure-card
+```
+
 For each source in `raw/` or `_raw/`:
 
 1. Create a source note under `wiki/sources/`.
@@ -177,6 +183,8 @@ python3 scripts/ghpf_wiki.py figure-insight --vault <path> --domain trading --qu
 python3 scripts/ghpf_wiki.py figure-export --vault <path> --design wiki/figure-designs/<design>.md --domain trading --name Figure_1 --run
 ```
 
+Use `video-frames` first when useful visual evidence lives in chart screenshots, YouTube strategy videos, experiment videos, or slide frames.
+
 Rules:
 
 1. Use `wiki/cards/figures/` for reusable visual patterns.
@@ -208,13 +216,14 @@ Before using the wiki as high-value context, prefer this loop:
 
 1. `capabilities` to know what this machine can extract.
 2. `extract --ingest` for PDF, web, local HTML, or YouTube transcript sources.
-3. `ingest` to compile raw material into source notes.
-4. `card`, `index`, `search`, and `insight` for paper, experiment, or strategy insight.
-5. `figure-card`, `figure-insight`, and `figure-export` for figure design and chart exports.
-6. `quality` and `lint` to check metadata, coverage, broken links, and manifest drift.
-7. `link-audit` and `link-strengthen` to improve graph connectivity.
-8. `evaluate` before relying on generated insight.
-9. `graphify-import` when a bulk Graphify map should become searchable reference context.
-10. `file-back` to save reusable answers.
-11. `graph` and `context` to export sidecar artifacts for agents.
-12. `cache-clean --dry-run` before deleting disposable cache.
+3. `video-frames --ingest --figure-card` for YouTube/local-video/image visual evidence.
+4. `ingest` to compile raw material into source notes.
+5. `card`, `index`, `search`, and `insight` for paper, experiment, or strategy insight.
+6. `figure-card`, `figure-insight`, and `figure-export` for figure design and chart exports.
+7. `quality` and `lint` to check metadata, coverage, broken links, and manifest drift.
+8. `link-audit` and `link-strengthen` to improve graph connectivity.
+9. `evaluate` before relying on generated insight.
+10. `graphify-import` when a bulk Graphify map should become searchable reference context.
+11. `file-back` to save reusable answers.
+12. `graph` and `context` to export sidecar artifacts for agents.
+13. `cache-clean --dry-run` before deleting disposable cache.

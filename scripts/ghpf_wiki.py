@@ -32,6 +32,8 @@ PIPELINE_STEPS = ["setup", "ingest", "compile", "lint", "strengthen", "file-back
 GRAPHIFY_RAW_DIR = ("raw", "graphify_articles")
 TEXT_SOURCE_SUFFIXES = {".md", ".txt", ".csv", ".json", ".yaml", ".yml"}
 EXTRACTABLE_SUFFIXES = TEXT_SOURCE_SUFFIXES | {".pdf", ".html", ".htm"}
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 VECTOR_DIMS = 256
 
@@ -256,6 +258,26 @@ def page_aliases(path: Path) -> set[str]:
     return aliases
 
 
+def existing_page_aliases(vault: Path) -> set[str]:
+    aliases = set()
+    for page in markdown_files(vault):
+        aliases.update(page_aliases(page))
+    return aliases
+
+
+def existing_wikilinks_for_terms(vault: Path, terms: list[str], limit: int = 8) -> tuple[list[str], list[str]]:
+    aliases = existing_page_aliases(vault)
+    links = []
+    candidates = []
+    for term in terms[:limit]:
+        title = titleize_slug(term)
+        if title.lower() in aliases:
+            links.append(f"[[{title}]]")
+        else:
+            candidates.append(title)
+    return links, candidates
+
+
 class SimpleHTMLTextExtractor(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -364,6 +386,286 @@ def write_extracted_markdown(vault: Path, source_label: str, kind: str, title: s
         encoding="utf-8",
     )
     return out
+
+
+def image_average_hash(path: Path) -> str:
+    try:
+        from PIL import Image
+    except Exception as exc:
+        raise RuntimeError("Image analysis requires Pillow.") from exc
+    with Image.open(path) as image:
+        gray = image.convert("L").resize((8, 8))
+        values = list(gray.tobytes())
+    mean = sum(values) / len(values)
+    bits = "".join("1" if value >= mean else "0" for value in values)
+    return f"{int(bits, 2):016x}"
+
+
+def image_stats(path: Path) -> dict:
+    try:
+        from PIL import Image, ImageStat
+    except Exception as exc:
+        raise RuntimeError("Image analysis requires Pillow.") from exc
+    with Image.open(path) as image:
+        rgb = image.convert("RGB")
+        gray = image.convert("L")
+        stat = ImageStat.Stat(gray)
+        sample = rgb.resize((1, 1)).getpixel((0, 0))
+        return {
+            "width": image.width,
+            "height": image.height,
+            "mode": image.mode,
+            "brightness": round(float(stat.mean[0]), 2),
+            "contrast": round(float(stat.stddev[0]), 2),
+            "average_rgb": list(sample),
+            "aspect": "landscape" if image.width >= image.height else "portrait",
+            "ahash": image_average_hash(path),
+        }
+
+
+def ocr_image(path: Path, languages: str = "eng+kor") -> tuple[str, str | None]:
+    if command_available("tesseract"):
+        cmd = ["tesseract", str(path), "stdout", "-l", languages, "--psm", "6"]
+        result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45, check=False)
+        if result.returncode == 0:
+            return normalize_extracted_text(result.stdout, max_chars=4000), None
+        return "", f"tesseract failed: {result.stderr.strip()[:300]}"
+    try:
+        import pytesseract
+        from PIL import Image
+    except Exception:
+        return "", "OCR unavailable: install tesseract or pytesseract."
+    try:
+        with Image.open(path) as image:
+            return normalize_extracted_text(pytesseract.image_to_string(image, lang=languages), max_chars=4000), None
+    except Exception as exc:
+        return "", f"pytesseract failed: {exc}"
+
+
+def frame_asset_root(vault: Path, run_id: str) -> Path:
+    root = vault / "raw" / "figures" / "video-frames" / run_id
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def video_frame_run_id(source_label: str, title: str = "") -> str:
+    basis = f"{source_label}\n{title}"
+    parsed = urllib.parse.urlparse(source_label)
+    if is_youtube_url(source_label):
+        name = youtube_video_id(source_label) or parsed.netloc
+    else:
+        name = Path(parsed.path or source_label).stem or parsed.netloc or "video-frames"
+    return f"{slugify(title or name)[:60]}-{hashlib.sha256(basis.encode('utf-8', errors='ignore')).hexdigest()[:10]}"
+
+
+def download_youtube_video(url: str, out_dir: Path) -> tuple[Path, str, list[str]]:
+    dlp = yt_dlp_command()
+    if not dlp:
+        raise RuntimeError("YouTube frame extraction requires yt-dlp or uvx.")
+    if not command_available("ffmpeg"):
+        raise RuntimeError("YouTube frame extraction requires ffmpeg.")
+    output_template = str(out_dir / "source.%(ext)s")
+    cmd = [
+        *dlp,
+        "-f",
+        "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+        "--merge-output-format",
+        "mp4",
+        "--write-info-json",
+        "--print",
+        "title",
+        "-o",
+        output_template,
+        url,
+    ]
+    result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300, check=False)
+    title = result.stdout.strip().splitlines()[0] if result.stdout.strip() else f"YouTube {youtube_video_id(url) or 'video'}"
+    if result.returncode != 0:
+        raise RuntimeError(f"yt-dlp video download failed: {result.stderr.strip()[:500]}")
+    videos = sorted(path for path in out_dir.glob("source.*") if path.suffix.lower() in VIDEO_SUFFIXES)
+    if not videos:
+        raise RuntimeError("yt-dlp did not produce a supported video file.")
+    warnings = []
+    if result.stderr.strip():
+        warnings.append(result.stderr.strip()[:500])
+    return videos[0], title, warnings
+
+
+def extract_video_frames(video_path: Path, frames_dir: Path, every_seconds: float = 30.0, max_frames: int = 12) -> list[Path]:
+    if not command_available("ffmpeg"):
+        raise RuntimeError("Video frame extraction requires ffmpeg.")
+    if every_seconds <= 0:
+        raise ValueError("every_seconds must be positive.")
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    output = frames_dir / "frame_%06d.jpg"
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(video_path),
+        "-vf",
+        f"fps=1/{every_seconds}",
+        "-frames:v",
+        str(max_frames),
+        str(output),
+    ]
+    result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg frame extraction failed: {result.stderr.strip()[:500]}")
+    frames = sorted(frames_dir.glob("frame_*.jpg"))
+    if not frames:
+        raise RuntimeError("ffmpeg did not produce frames.")
+    return frames
+
+
+def prepare_frame_source(vault: Path, source_value: str, every_seconds: float, max_frames: int) -> tuple[str, str, Path, list[Path], list[str]]:
+    value = str(source_value)
+    warnings = []
+    run_id = video_frame_run_id(value)
+    root = frame_asset_root(vault, run_id)
+    if is_youtube_url(value):
+        video_path, title, video_warnings = download_youtube_video(value, root)
+        warnings.extend(video_warnings)
+        frames = extract_video_frames(video_path, root, every_seconds=every_seconds, max_frames=max_frames)
+        return run_id, title, root, frames, warnings
+    if is_url(value):
+        body, content_type = fetch_url(value, max_bytes=100_000_000)
+        suffix = Path(urllib.parse.urlparse(value).path).suffix.lower()
+        title = page_title_from_path(Path(urllib.parse.urlparse(value).path or "remote-video"))
+        if content_type.startswith("image/") or suffix in IMAGE_SUFFIXES:
+            target = root / f"frame_000001{suffix if suffix in IMAGE_SUFFIXES else '.jpg'}"
+            target.write_bytes(body)
+            return run_id, title, root, [target], warnings
+        if content_type.startswith("video/") or suffix in VIDEO_SUFFIXES:
+            video_path = root / f"source{suffix if suffix in VIDEO_SUFFIXES else '.mp4'}"
+            video_path.write_bytes(body)
+            frames = extract_video_frames(video_path, root, every_seconds=every_seconds, max_frames=max_frames)
+            return run_id, title, root, frames, warnings
+        raise RuntimeError(f"Unsupported URL content type for frame analysis: {content_type or suffix}")
+    path = Path(value).expanduser()
+    if not path.exists() or not path.is_file():
+        raise RuntimeError("Frame source is missing or not a file.")
+    title = page_title_from_path(path)
+    suffix = path.suffix.lower()
+    if suffix in IMAGE_SUFFIXES:
+        target = root / f"frame_000001{suffix}"
+        if not target.exists():
+            shutil.copy2(path, target)
+        return run_id, title, root, [target], warnings
+    if suffix in VIDEO_SUFFIXES:
+        frames = extract_video_frames(path, root, every_seconds=every_seconds, max_frames=max_frames)
+        return run_id, title, root, frames, warnings
+    raise RuntimeError(f"Unsupported frame source suffix: {suffix}")
+
+
+def analyze_frames(vault: Path, frames: list[Path], run_id: str, ocr: bool = False, ocr_languages: str = "eng+kor") -> tuple[list[dict], list[str]]:
+    results = []
+    warnings = []
+    for index, frame in enumerate(frames, start=1):
+        rel = frame.relative_to(vault).as_posix()
+        item = {"index": index, "path": rel, "bytes": frame.stat().st_size}
+        try:
+            item.update(image_stats(frame))
+        except Exception as exc:
+            warnings.append(f"{rel}: image analysis failed: {exc}")
+        if ocr:
+            text, warning = ocr_image(frame, languages=ocr_languages)
+            item["ocr_text"] = text
+            if warning:
+                item["ocr_warning"] = warning
+                warnings.append(f"{rel}: {warning}")
+        results.append(item)
+    manifest = vault / "swarmvault" / "exports" / "video-frames" / f"{run_id}.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({"run_id": run_id, "frames": results, "warnings": warnings}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return results, warnings
+
+
+def write_video_frame_markdown(vault: Path, source_label: str, title: str, run_id: str, frames: list[dict], warnings: list[str]) -> Path:
+    warning_lines = [f"- {warning}" for warning in warnings] or ["- None"]
+    frame_lines = []
+    ocr_lines = []
+    for frame in frames:
+        frame_lines.append(
+            "- Frame {index}: `{path}` size={width}x{height} brightness={brightness} contrast={contrast} ahash={ahash}".format(
+                index=frame.get("index"),
+                path=frame.get("path"),
+                width=frame.get("width", "?"),
+                height=frame.get("height", "?"),
+                brightness=frame.get("brightness", "?"),
+                contrast=frame.get("contrast", "?"),
+                ahash=frame.get("ahash", "?"),
+            )
+        )
+        if frame.get("ocr_text"):
+            ocr_lines.append(f"### Frame {frame.get('index')} OCR\n\n{frame['ocr_text'][:2000]}\n")
+    text = "\n".join(
+        [
+            f"# {title} Video Frame Analysis",
+            "",
+            f"Original source: `{source_label}`",
+            "Extraction kind: `video-frames`",
+            f"Frame run: `{run_id}`",
+            f"Extracted at: `{now_iso()}`",
+            "",
+            "## Extraction Warnings",
+            "",
+            *warning_lines,
+            "",
+            "## Frame Files",
+            "",
+            *frame_lines,
+            "",
+            "## Visual Notes",
+            "",
+            "- Use these frames as visual evidence for chart, figure, slide, experiment, or trading strategy review.",
+            "- Compare OCR text and frame timing with transcript notes when a YouTube transcript is also ingested.",
+            "- Reuse chart-like frames through `figure-card`, `figure-insight`, and `figure-export`.",
+            "",
+            "## OCR Text",
+            "",
+            *(ocr_lines or ["- OCR was not run or no readable text was detected."]),
+            "",
+        ]
+    )
+    return write_extracted_markdown(vault, source_label, "video-frames", f"{title} Video Frames", text, warnings=warnings)
+
+
+def video_frames_command(
+    vault: Path,
+    source: str,
+    every_seconds: float = 30.0,
+    max_frames: int = 12,
+    ocr: bool = False,
+    ocr_languages: str = "eng+kor",
+    ingest: bool = False,
+    figure_card: bool = False,
+) -> dict:
+    vault = vault.expanduser()
+    run_id, title, root, frame_paths, source_warnings = prepare_frame_source(vault, source, every_seconds, max_frames)
+    frame_records, analysis_warnings = analyze_frames(vault, frame_paths, run_id, ocr=ocr, ocr_languages=ocr_languages)
+    warnings = source_warnings + analysis_warnings
+    source_markdown = write_video_frame_markdown(vault, source, title, run_id, frame_records, warnings)
+    report = {
+        "source": source,
+        "run_id": run_id,
+        "title": title,
+        "frames_dir": root.relative_to(vault).as_posix(),
+        "frames": len(frame_records),
+        "source_markdown": source_markdown.relative_to(vault).as_posix(),
+        "manifest": (vault / "swarmvault" / "exports" / "video-frames" / f"{run_id}.json").relative_to(vault).as_posix(),
+        "warnings": warnings,
+    }
+    if ingest:
+        ingest_result = ingest_sources(vault, [source_markdown.as_posix()])
+        report["ingest"] = ingest_result
+        if figure_card:
+            pages = [item["source_note"] for item in ingest_result.get("ingested", []) if item.get("source_note")]
+            report["figure_card"] = figure_card_command(vault, pages, domain="auto", all_sources=False)
+    return report
 
 
 def extract_pdf_text(path: Path) -> str:
@@ -1091,9 +1393,9 @@ def python_module_available(module: str) -> bool:
 
 
 def capabilities(vault: Path | None = None) -> dict:
-    modules = ["pypdf", "PyPDF2", "docx", "pptx", "openpyxl", "networkx", "youtube_transcript_api", "pytesseract", "playwright", "matplotlib", "numpy"]
+    modules = ["pypdf", "PyPDF2", "docx", "pptx", "openpyxl", "networkx", "youtube_transcript_api", "pytesseract", "playwright", "matplotlib", "numpy", "PIL"]
     caps = {
-        "commands": {name: command_available(name) for name in ["git", "node", "npx", "uv", "uvx", "graphify", "playwright", "yt-dlp", "tesseract", "obsidian"]},
+        "commands": {name: command_available(name) for name in ["git", "node", "npx", "uv", "uvx", "graphify", "playwright", "yt-dlp", "ffmpeg", "ffprobe", "tesseract", "obsidian"]},
         "python_modules": {name: python_module_available(name) for name in modules},
         "optional_modes": {
             "basic_wikilink_search": True,
@@ -1105,6 +1407,9 @@ def capabilities(vault: Path | None = None) -> dict:
             "office_extract_ready": python_module_available("docx") or python_module_available("pptx") or python_module_available("openpyxl"),
             "playwright_ready": command_available("playwright") or python_module_available("playwright") or command_available("npx"),
             "figure_export_ready": python_module_available("matplotlib") and python_module_available("numpy"),
+            "image_frame_analysis_ready": python_module_available("PIL"),
+            "video_frame_extract_ready": command_available("ffmpeg"),
+            "youtube_frame_extract_ready": command_available("ffmpeg") and (command_available("yt-dlp") or command_available("uvx")),
         },
     }
     if vault is not None:
@@ -1381,7 +1686,7 @@ def generate_card(vault: Path, page_rel: str, kind: str) -> dict:
     content = page.read_text(encoding="utf-8", errors="ignore")
     title = page_heading(content, page.name)
     terms = extract_terms(content, limit=10)
-    links = [f"[[{titleize_slug(term)}]]" for term in terms[:8]]
+    links, candidates = existing_wikilinks_for_terms(vault, terms, limit=8)
     sections = card_sections(kind, content)
     out = card_path(vault, kind, title)
     lines = [
@@ -1395,7 +1700,9 @@ def generate_card(vault: Path, page_rel: str, kind: str) -> dict:
         lines.extend([f"## {heading}", ""])
         lines.extend([f"- {bullet}" for bullet in bullets] or ["- Not enough evidence extracted yet."])
         lines.append("")
-    lines.extend(["## Links", "", " ".join(links) or "No key terms extracted.", ""])
+    lines.extend(["## Links", "", " ".join(links) or "No existing wiki targets found.", ""])
+    if candidates:
+        lines.extend(["## Candidate Terms", "", ", ".join(candidates), ""])
     out.write_text("\n".join(lines), encoding="utf-8")
     ensure_index_entry(vault, out.relative_to(vault).as_posix(), f"{kind.title()} Card: {title}")
     return {"page": page.relative_to(vault).as_posix(), "card": out.relative_to(vault).as_posix(), "kind": kind}
@@ -1638,6 +1945,7 @@ def generate_figure_card(vault: Path, page_rel: str, domain: str = "auto") -> di
     source_title = page_heading(content, page.name)
     resolved_domain = infer_figure_domain(content, fallback="generic") if domain == "auto" else domain
     terms = extract_terms(content, limit=12)
+    links, candidates = existing_wikilinks_for_terms(vault, terms, limit=8)
     panels = figure_panels(resolved_domain)
     title = f"{source_title} Figure Pattern"
     out = figure_card_path(vault, title)
@@ -1675,9 +1983,11 @@ def generate_figure_card(vault: Path, page_rel: str, domain: str = "auto") -> di
         "",
         "## Links",
         "",
-        " ".join(f"[[{titleize_slug(term)}]]" for term in terms[:8]) or "No key terms extracted.",
+        " ".join(links) or "No existing wiki targets found.",
         "",
     ]
+    if candidates:
+        lines.extend(["## Candidate Terms", "", ", ".join(candidates), ""])
     out.write_text("\n".join(lines), encoding="utf-8")
     ensure_index_entry(vault, out.relative_to(vault).as_posix(), f"Figure Card: {title}")
     return {"page": page.relative_to(vault).as_posix(), "figure_card": out.relative_to(vault).as_posix(), "domain": resolved_domain}
@@ -2132,6 +2442,16 @@ def main() -> int:
     figure_export_p.add_argument("--data", help="Optional CSV path with real data.")
     figure_export_p.add_argument("--run", action="store_true", help="Run generated Matplotlib script and export PDF/SVG/PNG.")
 
+    video_frames_p = sub.add_parser("video-frames")
+    video_frames_p.add_argument("--vault", default=".")
+    video_frames_p.add_argument("--source", required=True, help="YouTube URL, remote image/video URL, local image, or local video.")
+    video_frames_p.add_argument("--every-seconds", type=float, default=30.0, help="Frame interval for video sources.")
+    video_frames_p.add_argument("--max-frames", type=int, default=12)
+    video_frames_p.add_argument("--ocr", action="store_true", help="Run OCR when tesseract or pytesseract is available.")
+    video_frames_p.add_argument("--ocr-languages", default="eng+kor")
+    video_frames_p.add_argument("--ingest", action="store_true", help="Ingest the generated frame-analysis Markdown into the wiki.")
+    video_frames_p.add_argument("--figure-card", action="store_true", help="Create a figure card after ingesting the generated source note.")
+
     args = parser.parse_args()
     if args.command == "extract":
         result = extract_sources(Path(args.vault), args.sources)
@@ -2225,6 +2545,23 @@ def main() -> int:
         print(json.dumps(figure_insight_command(Path(args.vault), args.query, domain=args.domain, data_schema=args.data_schema, limit=args.limit), ensure_ascii=False, indent=2))
     elif args.command == "figure-export":
         print(json.dumps(figure_export_command(Path(args.vault), args.design, domain=args.domain, name=args.name, data=args.data, run=args.run), ensure_ascii=False, indent=2))
+    elif args.command == "video-frames":
+        print(
+            json.dumps(
+                video_frames_command(
+                    Path(args.vault),
+                    args.source,
+                    every_seconds=args.every_seconds,
+                    max_frames=args.max_frames,
+                    ocr=args.ocr,
+                    ocr_languages=args.ocr_languages,
+                    ingest=args.ingest,
+                    figure_card=args.figure_card,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     return 0
 
 

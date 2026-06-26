@@ -20,6 +20,14 @@ Extract PDF, web page, local HTML, or YouTube transcript sources and ingest them
 python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube>
 ```
 
+## /ghpf-video-frames
+
+Sample YouTube, local video, or image frames into visual evidence, ingest them, and create a figure card:
+
+```bash
+python3 scripts/ghpf_wiki.py video-frames --vault <path> --source <youtube-or-video-or-image> --ingest --figure-card
+```
+
 ## /ghpf-query
 
 Answer from `wiki/index.md`, page summaries, and relevant linked notes. Cite page paths.
