@@ -15,6 +15,9 @@ Useful commands:
 ```bash
 python3 scripts/setup_vault.py --vault <path> --profile auto
 python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube>
+python3 scripts/ghpf_wiki.py card --vault <path> --type paper --all-sources
+python3 scripts/ghpf_wiki.py index --vault <path>
+python3 scripts/ghpf_wiki.py insight --vault <path> --type experiment --query "<topic>"
 python3 scripts/ghpf_wiki.py graphify-import --vault <path> --graph <graph.json>
 python3 scripts/ghpf_wiki.py cache-clean --vault <path> --dry-run
 python3 scripts/ghpf_wiki.py graph --vault <path>

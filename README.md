@@ -112,6 +112,19 @@ Create a compact context pack for an agent:
 python3 scripts/ghpf_wiki.py context --vault ./my-vault --query "bitcoin regime filter strategy"
 ```
 
+Turn sources into reusable insight cards, build a local hybrid index, and synthesize insight:
+
+```bash
+python3 scripts/ghpf_wiki.py card --vault ./my-vault --type paper --all-sources
+python3 scripts/ghpf_wiki.py card --vault ./my-vault --type experiment wiki/sources/paper-notes.md
+python3 scripts/ghpf_wiki.py card --vault ./my-vault --type strategy wiki/sources/strategy-note.md
+python3 scripts/ghpf_wiki.py index --vault ./my-vault
+python3 scripts/ghpf_wiki.py search --vault ./my-vault --query "LLM agent irrigation safety memory"
+python3 scripts/ghpf_wiki.py insight --vault ./my-vault --type experiment --query "LLM agent automatic irrigation system"
+python3 scripts/ghpf_wiki.py insight --vault ./my-vault --type strategy --query "Bitcoin regime momentum volatility strategy"
+python3 scripts/ghpf_wiki.py evaluate --vault ./my-vault --type experiment --target wiki/syntheses/<insight>.md
+```
+
 Prune temporary cache data without touching `raw/` or `wiki/`:
 
 ```bash
@@ -142,6 +155,8 @@ The maintenance loop follows Karpathy's LLM Wiki idea while keeping the vault po
 6. Refresh `graph` and `context` exports for downstream agents.
 
 For bulk material, put source articles in `raw/graphify_articles/`, run Graphify externally, then import the resulting `graph.json` with `graphify-import`. Durable findings should be promoted into `wiki/`; `graph_imports/` can be regenerated or pruned.
+
+For paper, experiment, and trading strategy insight, use cards first. `card` creates compact reusable structure, `index` builds a local hashed-vector/keyword index, `search` runs hybrid retrieval, `insight` writes evidence-backed synthesis, and `evaluate` records lightweight quality checks.
 
 PDF extraction uses `pypdf` or `PyPDF2`. Web extraction uses Python's standard library. YouTube transcript extraction uses `youtube_transcript_api`, `yt-dlp`, or `uvx yt-dlp` when available. OCR, office parsing, and browser automation remain optional capabilities. `capabilities` reports what is available on the current machine so another user can clone the repo and let the workflow adapt to their environment.
 

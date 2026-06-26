@@ -46,10 +46,11 @@ Profile: `{profile}`
 - `wiki/sources/`: one note per source.
 - `wiki/concepts/`: durable ideas, methods, claims, and reusable patterns.
 - `wiki/entities/`: people, projects, organizations, assets, instruments, and code systems.
+- `wiki/cards/`: reusable paper, experiment, and strategy cards for insight workflows.
 - `wiki/syntheses/`: query answers and cross-source summaries filed back into the wiki.
 - `schema/`: wiki operating rules and validation expectations.
 - `graph_imports/`: imported Graphify reference layers. Treat these as useful maps, not canonical notes.
-- `swarmvault/`: graph, context-pack, task-ledger, and export sidecar artifacts.
+- `swarmvault/`: graph, hybrid index, context-pack, task-ledger, evaluation, and export sidecar artifacts.
 - `swarmvault/cache/`: temporary sidecar cache. Safe to prune with `cache-clean`.
 
 ## Operating Rules
@@ -63,6 +64,7 @@ Profile: `{profile}`
 7. Run lint after ingest or file-back work.
 8. Search `graph_imports/` for broad map context, then promote durable findings into `wiki/`.
 9. Preserve `raw/` and `wiki/`; prune only cache/export artifacts with explicit cache commands.
+10. Prefer cards and hybrid search for insight work; avoid rereading full sources unless needed.
 """
 
 
@@ -117,9 +119,12 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
                 "graphify_raw_dir": "raw/graphify_articles",
                 "capture_dir": "_raw",
                 "wiki_dir": "wiki",
+                "cards_dir": "wiki/cards",
                 "graph_imports_dir": "graph_imports",
                 "schema_dir": "schema",
                 "sidecar_dir": "swarmvault",
+                "hybrid_index_dir": "swarmvault/state/hybrid-index",
+                "evaluations_dir": "swarmvault/evaluations",
                 "cache_dir": "swarmvault/cache",
                 "cache_policy": {"max_age_days": 30, "keep_latest": 10},
                 "created_at": now,

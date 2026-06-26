@@ -9,6 +9,7 @@ import html
 import json
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import urllib.parse
@@ -32,6 +33,7 @@ GRAPHIFY_RAW_DIR = ("raw", "graphify_articles")
 TEXT_SOURCE_SUFFIXES = {".md", ".txt", ".csv", ".json", ".yaml", ".yml"}
 EXTRACTABLE_SUFFIXES = TEXT_SOURCE_SUFFIXES | {".pdf", ".html", ".htm"}
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+VECTOR_DIMS = 256
 
 
 def slugify(text: str) -> str:
@@ -208,6 +210,21 @@ def source_key_points(text: str, limit: int = 8) -> list[str]:
 
 def page_title_from_path(path: Path) -> str:
     return titleize_slug(slugify(path.stem))
+
+
+def page_aliases(path: Path) -> set[str]:
+    aliases = {path.stem.lower(), titleize_slug(path.stem).lower()}
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    frontmatter, body = parse_frontmatter(content)
+    for alias in frontmatter.get("aliases", []) if isinstance(frontmatter.get("aliases"), list) else []:
+        aliases.add(str(alias).lower())
+    for line in body.splitlines():
+        if line.startswith("# "):
+            title = line[2:].strip()
+            aliases.add(title.lower())
+            aliases.add(title.replace(":", "").lower())
+            break
+    return aliases
 
 
 class SimpleHTMLTextExtractor(HTMLParser):
@@ -624,8 +641,8 @@ def build_graph(vault: Path) -> dict:
         rel = path.relative_to(vault).as_posix()
         title = path.stem
         nodes[rel] = {"id": rel, "title": title, "path": rel, "kind": "page"}
-        title_to_id[title.lower()] = rel
-        title_to_id[titleize_slug(title).lower()] = rel
+        for alias in page_aliases(path):
+            title_to_id[alias] = rel
 
     for path in files:
         source = path.relative_to(vault).as_posix()
@@ -941,8 +958,8 @@ def graph_index(vault: Path) -> tuple[dict[str, Path], dict[str, set[str]], dict
     pages = markdown_files(vault)
     page_by_title = {}
     for page in pages:
-        page_by_title[page.stem.lower()] = page
-        page_by_title[titleize_slug(page.stem).lower()] = page
+        for alias in page_aliases(page):
+            page_by_title[alias] = page
     outgoing = {p.relative_to(vault).as_posix(): set() for p in pages}
     incoming = {p.relative_to(vault).as_posix(): set() for p in pages}
     for page in pages:
@@ -1264,13 +1281,290 @@ def cache_clean(vault: Path, max_age_days: int = 30, keep_latest: int = 10, dry_
     return {"dry_run": dry_run, "max_age_days": max_age_days, "keep_latest": keep_latest, "include_exports": include_exports, "removed": removed, "kept": kept}
 
 
+def page_heading(content: str, fallback: str) -> str:
+    _, body = parse_frontmatter(content)
+    for line in body.splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return titleize_slug(Path(fallback).stem)
+
+
+def sentence_candidates(text: str, keywords: list[str], limit: int = 4) -> list[str]:
+    _, body = parse_frontmatter(text)
+    pieces = re.split(r"(?<=[.!?。])\s+|\n+", body)
+    scored = []
+    for piece in pieces:
+        cleaned = re.sub(r"\s+", " ", piece).strip(" -*#\t")
+        if len(cleaned) < 20:
+            continue
+        haystack = cleaned.lower()
+        score = sum(haystack.count(keyword.lower()) for keyword in keywords)
+        if score:
+            scored.append((score, cleaned[:320]))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [item for _, item in scored[:limit]]
+
+
+def fallback_bullets(text: str, limit: int = 4) -> list[str]:
+    return [line[:320] for line in summarize_text(text, max_lines=limit)]
+
+
+def card_path(vault: Path, kind: str, title: str) -> Path:
+    folder = {"paper": "papers", "experiment": "experiments", "strategy": "strategies"}[kind]
+    root = vault / "wiki" / "cards" / folder
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{slugify(title)[:90]}.md"
+
+
+def card_sections(kind: str, content: str) -> dict[str, list[str]]:
+    if kind == "paper":
+        return {
+            "Problem": sentence_candidates(content, ["problem", "challenge", "issue", "goal", "objective", "문제", "목표"]) or fallback_bullets(content, 2),
+            "Method": sentence_candidates(content, ["method", "approach", "agent", "tool", "memory", "framework", "방법", "구조"]),
+            "Contribution": sentence_candidates(content, ["contribution", "improve", "shows", "proposes", "emphasizes", "기여", "제안"]),
+            "Useful For My Work": sentence_candidates(content, ["irrigation", "greenhouse", "trading", "strategy", "experiment", "automatic", "관수", "자동매매"]),
+            "Experiment Ideas": sentence_candidates(content, ["compare", "evaluation", "metric", "baseline", "ablation", "실험", "평가"]),
+            "Limitations": sentence_candidates(content, ["limitation", "risk", "failure", "requires", "safety", "한계", "위험"]),
+        }
+    if kind == "experiment":
+        return {
+            "Hypothesis": sentence_candidates(content, ["hypothesis", "goal", "should", "improve", "검증", "가설"]) or fallback_bullets(content, 2),
+            "Variables": sentence_candidates(content, ["variable", "factor", "sensor", "weather", "memory", "tool", "regime", "변수"]),
+            "Metrics": sentence_candidates(content, ["metric", "accuracy", "error", "drawdown", "water", "drain", "EC", "평가", "지표"]),
+            "Baselines": sentence_candidates(content, ["baseline", "control", "compare", "rule", "buy-and-hold", "기준"]),
+            "Risks": sentence_candidates(content, ["risk", "failure", "leakage", "overfitting", "safety", "위험"]),
+        }
+    return {
+        "Idea": sentence_candidates(content, ["strategy", "signal", "regime", "momentum", "volatility", "idea", "전략"]) or fallback_bullets(content, 2),
+        "Components": sentence_candidates(content, ["filter", "sizing", "entry", "exit", "risk", "component", "signal"]),
+        "Backtest Plan": sentence_candidates(content, ["backtest", "walk-forward", "baseline", "cost", "slippage", "validation"]),
+        "Rejection Rules": sentence_candidates(content, ["reject", "drawdown", "overfit", "unstable", "leakage", "risk"]),
+        "Risks": sentence_candidates(content, ["risk", "leakage", "overfitting", "transaction", "drawdown", "위험"]),
+    }
+
+
+def generate_card(vault: Path, page_rel: str, kind: str) -> dict:
+    vault = vault.expanduser()
+    page = vault_relative_path(vault, page_rel)
+    if not page.exists():
+        return {"page": page_rel, "error": "FILE_NOT_FOUND"}
+    content = page.read_text(encoding="utf-8", errors="ignore")
+    title = page_heading(content, page.name)
+    terms = extract_terms(content, limit=10)
+    links = [f"[[{titleize_slug(term)}]]" for term in terms[:8]]
+    sections = card_sections(kind, content)
+    out = card_path(vault, kind, title)
+    lines = [
+        frontmatter_block({"tags": [f"ghpf/card/{kind}"], "source": page.relative_to(vault).as_posix(), "created": now_iso(), "aliases": [title]}).rstrip(),
+        f"# {kind.title()} Card: {title}",
+        "",
+        f"Source: `{page.relative_to(vault).as_posix()}`",
+        "",
+    ]
+    for heading, bullets in sections.items():
+        lines.extend([f"## {heading}", ""])
+        lines.extend([f"- {bullet}" for bullet in bullets] or ["- Not enough evidence extracted yet."])
+        lines.append("")
+    lines.extend(["## Links", "", " ".join(links) or "No key terms extracted.", ""])
+    out.write_text("\n".join(lines), encoding="utf-8")
+    ensure_index_entry(vault, out.relative_to(vault).as_posix(), f"{kind.title()} Card: {title}")
+    return {"page": page.relative_to(vault).as_posix(), "card": out.relative_to(vault).as_posix(), "kind": kind}
+
+
+def card_command(vault: Path, kind: str, pages: list[str], all_sources: bool = False) -> dict:
+    vault = vault.expanduser()
+    if all_sources:
+        selected = [p.relative_to(vault).as_posix() for p in markdown_files(vault) if p.as_posix().find("/wiki/sources/") >= 0]
+    else:
+        selected = pages
+    results = [generate_card(vault, page, kind) for page in selected]
+    out = vault / "swarmvault" / "exports" / f"{kind}-card-report.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    report = {"kind": kind, "count": len(results), "results": results}
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
+def tokenize(text: str) -> list[str]:
+    return [token.lower() for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}|[가-힣]{2,}", text)]
+
+
+def hashed_vector(text: str, dims: int = VECTOR_DIMS) -> list[float]:
+    vector = [0.0] * dims
+    for token in tokenize(text):
+        bucket = int(hashlib.sha256(token.encode("utf-8")).hexdigest()[:8], 16) % dims
+        vector[bucket] += 1.0
+    norm = sum(value * value for value in vector) ** 0.5
+    if norm:
+        vector = [value / norm for value in vector]
+    return vector
+
+
+def cosine(a: list[float], b: list[float]) -> float:
+    return sum(x * y for x, y in zip(a, b))
+
+
+def chunk_page(vault: Path, page: Path, max_chars: int = 1200) -> list[dict]:
+    content = page.read_text(encoding="utf-8", errors="ignore")
+    title = page_heading(content, page.name)
+    sections = extract_sections(content)
+    chunks = []
+    for section, body in sections.items():
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+        current = ""
+        for paragraph in paragraphs:
+            if len(current) + len(paragraph) > max_chars and current:
+                chunks.append({"path": page.relative_to(vault).as_posix(), "title": title, "section": section, "text": current.strip()})
+                current = ""
+            current += ("\n\n" if current else "") + paragraph
+        if current.strip():
+            chunks.append({"path": page.relative_to(vault).as_posix(), "title": title, "section": section, "text": current.strip()})
+    return chunks
+
+
+def index_paths(vault: Path) -> tuple[Path, Path]:
+    root = vault / "swarmvault" / "state" / "hybrid-index"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "chunks.jsonl", root / "vectors.sqlite"
+
+
+def build_hybrid_index(vault: Path) -> dict:
+    vault = vault.expanduser()
+    chunks_path, db_path = index_paths(vault)
+    chunks = []
+    for page in reference_markdown_files(vault):
+        if page.name in {"index.md", "log.md"}:
+            continue
+        chunks.extend(chunk_page(vault, page))
+    with chunks_path.open("w", encoding="utf-8") as handle:
+        for idx, chunk in enumerate(chunks):
+            chunk["chunk_id"] = f"chunk-{idx:06d}"
+            chunk["terms"] = sorted(set(tokenize(f"{chunk['title']} {chunk['section']} {chunk['text']}")))[:80]
+            handle.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE IF EXISTS vectors")
+        conn.execute("CREATE TABLE vectors (chunk_id TEXT PRIMARY KEY, path TEXT, title TEXT, section TEXT, text TEXT, vector TEXT)")
+        for chunk in chunks:
+            conn.execute(
+                "INSERT INTO vectors VALUES (?, ?, ?, ?, ?, ?)",
+                (chunk["chunk_id"], chunk["path"], chunk["title"], chunk["section"], chunk["text"], json.dumps(hashed_vector(f"{chunk['title']} {chunk['section']} {chunk['text']}"))),
+            )
+        conn.commit()
+    return {"chunks": len(chunks), "chunks_path": chunks_path.relative_to(vault).as_posix(), "vectors_path": db_path.relative_to(vault).as_posix(), "backend": "local-hashed-vector"}
+
+
+def load_index_chunks(vault: Path) -> list[dict]:
+    chunks_path, _ = index_paths(vault)
+    if not chunks_path.exists():
+        build_hybrid_index(vault)
+    return [json.loads(line) for line in chunks_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def hybrid_search(vault: Path, query: str, limit: int = 10) -> dict:
+    vault = vault.expanduser()
+    chunks = load_index_chunks(vault)
+    query_terms = tokenize(query)
+    query_vec = hashed_vector(query)
+    scored = []
+    for chunk in chunks:
+        haystack = f"{chunk['title']} {chunk['section']} {chunk['text']}".lower()
+        keyword = sum(haystack.count(term) for term in query_terms)
+        vector = cosine(query_vec, hashed_vector(haystack))
+        card_boost = 0.35 if "/cards/" in chunk["path"] else 0.0
+        graph_boost = min(len(WIKILINK_RE.findall(chunk["text"])) * 0.03, 0.3)
+        score = keyword + vector * 3.0 + card_boost + graph_boost
+        if score > 0:
+            scored.append({"score": round(score, 4), "keyword": keyword, "vector": round(vector, 4), "graph": round(graph_boost, 4), "card_boost": card_boost, **chunk})
+    scored.sort(key=lambda item: (-item["score"], item["path"], item["chunk_id"]))
+    results = scored[:limit]
+    out = vault / "swarmvault" / "exports" / "search-report.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    report = {"query": query, "limit": limit, "results": results}
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
+def insight_sections(kind: str) -> list[str]:
+    if kind == "paper":
+        return ["Evidence Base", "Research Gap", "Design Insight", "Related Work Angle", "Next Paper Moves"]
+    if kind == "experiment":
+        return ["Hypothesis", "Variables", "Baselines", "Metrics", "Ablations", "Failure Risks"]
+    return ["Strategy Thesis", "Components", "Backtest Plan", "Risk Controls", "Rejection Rules"]
+
+
+def evaluate_evidence(kind: str, results: list[dict]) -> dict:
+    paths = {item["path"] for item in results}
+    text = "\n".join(item["text"].lower() for item in results)
+    checks = {
+        "evidence_count": len(results),
+        "source_diversity": len(paths),
+        "has_method_or_component": any(word in text for word in ["method", "component", "tool", "agent", "signal", "방법", "구조"]),
+        "has_metric_or_validation": any(word in text for word in ["metric", "baseline", "evaluation", "backtest", "validation", "평가", "검증"]),
+        "has_risk_or_limitation": any(word in text for word in ["risk", "limitation", "drawdown", "safety", "failure", "leakage", "위험", "한계"]),
+    }
+    if kind == "strategy":
+        checks["has_backtestability"] = any(word in text for word in ["backtest", "walk-forward", "fee", "slippage", "drawdown"])
+    if kind == "experiment":
+        checks["has_ablation_hint"] = any(word in text for word in ["ablation", "compare", "baseline", "variable"])
+    passed = sum(1 for value in checks.values() if bool(value))
+    return {"checks": checks, "score": round(passed / len(checks), 3), "passed": passed >= max(3, len(checks) - 2)}
+
+
+def insight_command(vault: Path, kind: str, query: str, limit: int = 8) -> dict:
+    vault = vault.expanduser()
+    search = hybrid_search(vault, query, limit=limit)
+    results = search["results"]
+    evaluation = evaluate_evidence(kind, results)
+    title = f"{kind.title()} Insight - {query[:80]}"
+    out = vault / "wiki" / "syntheses" / f"{slugify(title)[:100]}.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        frontmatter_block({"tags": [f"ghpf/insight/{kind}"], "source": "hybrid-search", "created": now_iso(), "aliases": [title]}).rstrip(),
+        f"# {title}",
+        "",
+        f"Query: `{query}`",
+        f"Evidence score: `{evaluation['score']}`",
+        "",
+    ]
+    for heading in insight_sections(kind):
+        lines.extend([f"## {heading}", ""])
+        if results:
+            for item in results[: min(4, len(results))]:
+                snippet = re.sub(r"\s+", " ", item["text"]).strip()[:260]
+                lines.append(f"- `{item['path']}`: {snippet}")
+        else:
+            lines.append("- No evidence found.")
+        lines.append("")
+    lines.extend(["## Evidence", ""])
+    for item in results:
+        lines.append(f"- score={item['score']} vector={item['vector']} keyword={item['keyword']} `{item['path']}` section={item['section']}")
+    lines.extend(["", "## Evaluation", "", "```json", json.dumps(evaluation, ensure_ascii=False, indent=2), "```", ""])
+    out.write_text("\n".join(lines), encoding="utf-8")
+    ensure_index_entry(vault, out.relative_to(vault).as_posix(), title)
+    return {"insight": out.relative_to(vault).as_posix(), "kind": kind, "query": query, "evidence_count": len(results), "evaluation": evaluation}
+
+
+def evaluate_command(vault: Path, kind: str, target: str) -> dict:
+    vault = vault.expanduser()
+    path = vault_relative_path(vault, target)
+    if not path.exists():
+        return {"target": target, "error": "FILE_NOT_FOUND"}
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    result = evaluate_evidence(kind, [{"path": path.relative_to(vault).as_posix(), "text": content}])
+    out = vault / "swarmvault" / "evaluations" / f"{slugify(path.stem)}-{kind}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    report = {"target": path.relative_to(vault).as_posix(), "kind": kind, **result}
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
 def lint_wiki(vault: Path) -> dict:
     vault = vault.expanduser()
     pages = markdown_files(vault)
     page_by_title = {}
     for page in pages:
-        page_by_title[page.stem.lower()] = page
-        page_by_title[titleize_slug(page.stem).lower()] = page
+        for alias in page_aliases(page):
+            page_by_title[alias] = page
     page_rels = {p.relative_to(vault).as_posix() for p in pages}
     broken_links = []
     orphan_pages = []
@@ -1428,6 +1722,31 @@ def main() -> int:
     cache_clean_p.add_argument("--include-exports", action="store_true")
     cache_clean_p.add_argument("--dry-run", action="store_true")
 
+    card_p = sub.add_parser("card")
+    card_p.add_argument("--vault", default=".")
+    card_p.add_argument("--type", choices=["paper", "experiment", "strategy"], required=True)
+    card_p.add_argument("--all-sources", action="store_true")
+    card_p.add_argument("pages", nargs="*", help="Wiki source pages to turn into structured cards.")
+
+    index_p = sub.add_parser("index")
+    index_p.add_argument("--vault", default=".")
+
+    search_p = sub.add_parser("search")
+    search_p.add_argument("--vault", default=".")
+    search_p.add_argument("--query", required=True)
+    search_p.add_argument("--limit", type=int, default=10)
+
+    insight_p = sub.add_parser("insight")
+    insight_p.add_argument("--vault", default=".")
+    insight_p.add_argument("--type", choices=["paper", "experiment", "strategy"], required=True)
+    insight_p.add_argument("--query", required=True)
+    insight_p.add_argument("--limit", type=int, default=8)
+
+    evaluate_p = sub.add_parser("evaluate")
+    evaluate_p.add_argument("--vault", default=".")
+    evaluate_p.add_argument("--type", choices=["paper", "experiment", "strategy"], required=True)
+    evaluate_p.add_argument("--target", required=True)
+
     args = parser.parse_args()
     if args.command == "extract":
         result = extract_sources(Path(args.vault), args.sources)
@@ -1505,6 +1824,16 @@ def main() -> int:
                 indent=2,
             )
         )
+    elif args.command == "card":
+        print(json.dumps(card_command(Path(args.vault), args.type, args.pages, all_sources=args.all_sources), ensure_ascii=False, indent=2))
+    elif args.command == "index":
+        print(json.dumps(build_hybrid_index(Path(args.vault)), ensure_ascii=False, indent=2))
+    elif args.command == "search":
+        print(json.dumps(hybrid_search(Path(args.vault), args.query, limit=args.limit), ensure_ascii=False, indent=2))
+    elif args.command == "insight":
+        print(json.dumps(insight_command(Path(args.vault), args.type, args.query, limit=args.limit), ensure_ascii=False, indent=2))
+    elif args.command == "evaluate":
+        print(json.dumps(evaluate_command(Path(args.vault), args.type, args.target), ensure_ascii=False, indent=2))
     return 0
 
 

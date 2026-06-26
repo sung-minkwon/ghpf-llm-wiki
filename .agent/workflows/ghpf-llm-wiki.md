@@ -32,6 +32,17 @@ Create a compact agent handoff:
 python3 scripts/ghpf_wiki.py context --vault <path> --query "<task>"
 ```
 
+## /ghpf-insight
+
+Create reusable cards, build the hybrid index, and synthesize insight:
+
+```bash
+python3 scripts/ghpf_wiki.py card --vault <path> --type paper --all-sources
+python3 scripts/ghpf_wiki.py index --vault <path>
+python3 scripts/ghpf_wiki.py insight --vault <path> --type experiment --query "<task>"
+python3 scripts/ghpf_wiki.py evaluate --vault <path> --type experiment --target <insight-page>
+```
+
 ## /ghpf-graph
 
 Refresh graph artifacts:

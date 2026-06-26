@@ -11,13 +11,18 @@
     "wiki/citations",
     "wiki/concepts",
     "wiki/entities",
+    "wiki/cards/papers",
+    "wiki/cards/experiments",
+    "wiki/cards/strategies",
     "wiki/syntheses",
     "wiki/open-questions",
     "wiki/tasks",
     "swarmvault/state",
+    "swarmvault/state/hybrid-index",
     "swarmvault/cache",
     "swarmvault/context-packs",
     "swarmvault/task-ledger",
+    "swarmvault/evaluations",
     "swarmvault/exports"
   ]
 }

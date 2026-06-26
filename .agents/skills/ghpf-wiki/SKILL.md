@@ -143,6 +143,29 @@ python3 scripts/ghpf_wiki.py task start --vault <path> --title "<task>"
 python3 scripts/ghpf_wiki.py task finish --vault <path> --title "<task>" --note "<result>"
 ```
 
+## Insight Workflows
+
+Use cards and hybrid retrieval for paper, experiment, and strategy insight:
+
+```bash
+python3 scripts/ghpf_wiki.py card --vault <path> --type paper --all-sources
+python3 scripts/ghpf_wiki.py card --vault <path> --type experiment wiki/sources/<source-note>.md
+python3 scripts/ghpf_wiki.py card --vault <path> --type strategy wiki/sources/<source-note>.md
+python3 scripts/ghpf_wiki.py index --vault <path>
+python3 scripts/ghpf_wiki.py search --vault <path> --query "<query>"
+python3 scripts/ghpf_wiki.py insight --vault <path> --type experiment --query "<query>"
+python3 scripts/ghpf_wiki.py insight --vault <path> --type strategy --query "<query>"
+python3 scripts/ghpf_wiki.py evaluate --vault <path> --type experiment --target wiki/syntheses/<insight>.md
+```
+
+Prefer this shape:
+
+1. Paper cards for contribution, method, relevance, and limitation.
+2. Experiment cards for hypothesis, variables, metrics, baselines, and risks.
+3. Strategy cards for thesis, components, backtest plan, risk controls, and rejection rules.
+4. Hybrid search before synthesis.
+5. Lightweight evaluation before treating an insight as durable.
+
 Prune disposable cache without touching `raw/` or `wiki/`:
 
 ```bash
@@ -167,9 +190,11 @@ Before using the wiki as high-value context, prefer this loop:
 1. `capabilities` to know what this machine can extract.
 2. `extract --ingest` for PDF, web, local HTML, or YouTube transcript sources.
 3. `ingest` to compile raw material into source notes.
-4. `quality` and `lint` to check metadata, coverage, broken links, and manifest drift.
-5. `link-audit` and `link-strengthen` to improve graph connectivity.
-6. `graphify-import` when a bulk Graphify map should become searchable reference context.
-7. `file-back` to save reusable answers.
-8. `graph` and `context` to export sidecar artifacts for agents.
-9. `cache-clean --dry-run` before deleting disposable cache.
+4. `card`, `index`, `search`, and `insight` for paper, experiment, or strategy insight.
+5. `quality` and `lint` to check metadata, coverage, broken links, and manifest drift.
+6. `link-audit` and `link-strengthen` to improve graph connectivity.
+7. `evaluate` before relying on generated insight.
+8. `graphify-import` when a bulk Graphify map should become searchable reference context.
+9. `file-back` to save reusable answers.
+10. `graph` and `context` to export sidecar artifacts for agents.
+11. `cache-clean --dry-run` before deleting disposable cache.
