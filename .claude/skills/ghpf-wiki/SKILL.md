@@ -19,6 +19,12 @@ Use this skill to create and operate a portable LLM Wiki.
 
 ## Setup
 
+Before assuming optional extractors exist, check the local environment:
+
+```bash
+python3 scripts/ghpf_wiki.py capabilities --vault <path>
+```
+
 Run:
 
 ```bash
@@ -45,17 +51,38 @@ python3 scripts/ghpf_wiki.py ingest --vault <path> [source files...]
 For each source in `raw/` or `_raw/`:
 
 1. Create a source note under `wiki/sources/`.
-2. Extract durable concepts, entities, claims, methods, strategies, experiments, and open questions.
-3. Merge into existing `wiki/concepts/`, `wiki/entities/`, project, paper, trading, or code notes.
-4. Add source references and `[[wikilinks]]`.
-5. Append the operation to `wiki/log.md`.
+2. Add frontmatter, source provenance, a source coverage checklist, and key `[[wikilinks]]`.
+3. Extract durable concepts, entities, claims, methods, strategies, experiments, and open questions.
+4. Merge into existing `wiki/concepts/`, `wiki/entities/`, project, paper, trading, or code notes.
+5. Add source references and `[[wikilinks]]`.
+6. Append the operation to `wiki/log.md`.
 
 ## Maintain
+
+Use pipeline state to prevent skipped steps:
+
+```bash
+python3 scripts/ghpf_wiki.py state --vault <path> init
+python3 scripts/ghpf_wiki.py state --vault <path> check ingest
+python3 scripts/ghpf_wiki.py state --vault <path> complete ingest
+```
 
 Run lint after ingest, file-back, or broad wiki edits:
 
 ```bash
 python3 scripts/ghpf_wiki.py lint --vault <path>
+```
+
+Run quality scoring for wiki pages. Use `--strict` when a pass/fail gate is needed:
+
+```bash
+python3 scripts/ghpf_wiki.py quality --vault <path> --strict wiki/sources/<source-note>.md
+```
+
+Compare two Markdown notes section-by-section before merging or replacing content:
+
+```bash
+python3 scripts/ghpf_wiki.py diff --vault <path> wiki/syntheses/old.md wiki/syntheses/new.md
 ```
 
 File reusable answers back into the wiki:
@@ -70,6 +97,13 @@ Refresh graph artifacts:
 
 ```bash
 python3 scripts/ghpf_wiki.py graph --vault <path>
+```
+
+Audit graph health and strengthen relevant links:
+
+```bash
+python3 scripts/ghpf_wiki.py link-audit --vault <path>
+python3 scripts/ghpf_wiki.py link-strengthen --vault <path> --page wiki/sources/<source-note>.md --max-links 5 --backlink
 ```
 
 Build a context pack:
@@ -94,3 +128,14 @@ Answer from the wiki first:
 3. Open the smallest set of relevant pages.
 4. Cite page paths.
 5. If the answer should compound, save it under `wiki/syntheses/` or an appropriate domain folder with `file-back`.
+
+## Quality Gates
+
+Before using the wiki as high-value context, prefer this loop:
+
+1. `capabilities` to know what this machine can extract.
+2. `ingest` to compile raw material into source notes.
+3. `quality` and `lint` to check metadata, coverage, broken links, and manifest drift.
+4. `link-audit` and `link-strengthen` to improve graph connectivity.
+5. `file-back` to save reusable answers.
+6. `graph` and `context` to export sidecar artifacts for agents.

@@ -39,16 +39,31 @@ python3 scripts/setup_vault.py --vault ~/obsidian/ghpf --source ~/papers --sourc
 
 ## Sidecar Commands
 
+Check installed optional capabilities:
+
+```bash
+python3 scripts/ghpf_wiki.py capabilities --vault ./my-vault
+```
+
 Ingest source files into the compiled wiki:
 
 ```bash
 python3 scripts/ghpf_wiki.py ingest --vault ./my-vault ./paper-notes.md
 ```
 
-Lint wiki health:
+Track the Karpathy-style pipeline so steps are not skipped:
+
+```bash
+python3 scripts/ghpf_wiki.py state --vault ./my-vault init
+python3 scripts/ghpf_wiki.py state --vault ./my-vault complete setup
+python3 scripts/ghpf_wiki.py state --vault ./my-vault check ingest
+```
+
+Lint wiki health and write a quality report:
 
 ```bash
 python3 scripts/ghpf_wiki.py lint --vault ./my-vault
+python3 scripts/ghpf_wiki.py quality --vault ./my-vault --strict wiki/sources/paper-notes.md
 ```
 
 File a reusable answer back into the wiki:
@@ -57,10 +72,23 @@ File a reusable answer back into the wiki:
 python3 scripts/ghpf_wiki.py file-back --vault ./my-vault --title "BTC regime filter" --body "Reusable synthesis with [[wikilinks]]."
 ```
 
+Compare section-level changes between two notes:
+
+```bash
+python3 scripts/ghpf_wiki.py diff --vault ./my-vault wiki/syntheses/old.md wiki/syntheses/new.md
+```
+
 Build a wikilink graph:
 
 ```bash
 python3 scripts/ghpf_wiki.py graph --vault ./my-vault
+```
+
+Audit and strengthen wikilinks:
+
+```bash
+python3 scripts/ghpf_wiki.py link-audit --vault ./my-vault
+python3 scripts/ghpf_wiki.py link-strengthen --vault ./my-vault --page wiki/sources/paper-notes.md --max-links 5 --backlink
 ```
 
 Create a compact context pack for an agent:
@@ -79,3 +107,16 @@ python3 scripts/ghpf_wiki.py task finish --vault ./my-vault --title "Test BTC st
 ## Design Rule
 
 Keep `wiki/` as the human-readable canonical knowledge base. Let sidecar tools write only to `swarmvault/`, `wiki/tasks/`, and explicit exports unless a human asks for wiki edits.
+
+## Quality Loop
+
+The maintenance loop follows Karpathy's LLM Wiki idea while keeping the vault portable:
+
+1. Put immutable source material in `raw/`.
+2. Compile durable notes into `wiki/` with source coverage checklists and `[[wikilinks]]`.
+3. Run `quality`, `lint`, and `link-audit` before relying on the wiki as context.
+4. Use `link-strengthen` and manual review to add missing bidirectional links.
+5. File reusable agent answers back into `wiki/syntheses/`.
+6. Refresh `graph` and `context` exports for downstream agents.
+
+Heavy extractors such as YouTube transcripts, OCR, office parsing, and browser automation are treated as optional capabilities. `capabilities` reports what is available on the current machine so another user can clone the repo and let the workflow adapt to their environment.

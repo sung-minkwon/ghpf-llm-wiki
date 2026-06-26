@@ -9,10 +9,21 @@ import html
 import json
 import re
 import shutil
+import subprocess
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
+QUALITY_REQUIRED_FIELDS = ["tags", "source", "created", "aliases"]
+QUALITY_WEIGHTS = {
+    "completeness": 0.20,
+    "connections": 0.20,
+    "coverage": 0.25,
+    "consistency": 0.20,
+    "suggestions": 0.15,
+}
+PIPELINE_STEPS = ["setup", "ingest", "compile", "lint", "strengthen", "file-back", "graph", "context"]
 
 
 def slugify(text: str) -> str:
@@ -33,6 +44,39 @@ def now_iso() -> str:
 
 def read_text(path: Path, max_chars: int = 50000) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+
+
+def parse_frontmatter(content: str) -> tuple[dict, str]:
+    if not content.startswith("---\n"):
+        return {}, content
+    parts = content.split("\n---\n", 1)
+    if len(parts) != 2:
+        return {}, content
+    frontmatter = {}
+    for line in parts[0].splitlines()[1:]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if value.startswith("[") and value.endswith("]"):
+            items = [item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()]
+            frontmatter[key] = items
+        elif value:
+            frontmatter[key] = value.strip("\"'")
+    return frontmatter, parts[1]
+
+
+def frontmatter_block(fields: dict) -> str:
+    lines = ["---"]
+    for key, value in fields.items():
+        if isinstance(value, list):
+            rendered = ", ".join(json.dumps(str(item), ensure_ascii=False) for item in value)
+            lines.append(f"{key}: [{rendered}]")
+        else:
+            lines.append(f"{key}: {json.dumps(str(value), ensure_ascii=False)}")
+    lines.append("---")
+    return "\n".join(lines) + "\n\n"
 
 
 def manifest_path(vault: Path) -> Path:
@@ -133,6 +177,16 @@ def extract_terms(text: str, limit: int = 12) -> list[str]:
     return [word for word, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]]
 
 
+def source_key_points(text: str, limit: int = 8) -> list[str]:
+    lines = summarize_text(text, max_lines=limit)
+    points = []
+    for line in lines:
+        cleaned = re.sub(r"^#+\s*", "", line).strip("-* \t")
+        if cleaned:
+            points.append(cleaned[:240])
+    return points
+
+
 def page_title_from_path(path: Path) -> str:
     return titleize_slug(slugify(path.stem))
 
@@ -162,9 +216,20 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
         terms = extract_terms(text)
         summary = summarize_text(text)
         term_links = " ".join(f"[[{titleize_slug(term)}]]" for term in terms[:8])
+        key_points = source_key_points(text)
 
         source_note.parent.mkdir(parents=True, exist_ok=True)
         source_note.write_text(
+            frontmatter_block(
+                {
+                    "tags": ["ghpf/source"],
+                    "source": source_rel,
+                    "created": now_iso(),
+                    "aliases": [title],
+                    "sha256": digest,
+                }
+            )
+            +
             "\n".join(
                 [
                     f"# {title}",
@@ -179,6 +244,10 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
                     "## Key Links",
                     "",
                     term_links or "No key terms extracted.",
+                    "",
+                    "## Source Coverage",
+                    "",
+                    *[f"- [x] {line}" for line in key_points],
                     "",
                     "## Open Questions",
                     "",
@@ -196,7 +265,15 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
             if not concept_path.exists():
                 concept_path.parent.mkdir(parents=True, exist_ok=True)
                 concept_path.write_text(
-                    f"# {concept_title}\n\n## Sources\n\n- [[{title}]]\n\n## Notes\n\n- Created from `{source_rel}`.\n",
+                    frontmatter_block(
+                        {
+                            "tags": ["ghpf/concept"],
+                            "source": source_rel,
+                            "created": now_iso(),
+                            "aliases": [concept_title],
+                        }
+                    )
+                    + f"# {concept_title}\n\n## Sources\n\n- [[{title}]]\n\n## Notes\n\n- Created from `{source_rel}`.\n",
                     encoding="utf-8",
                 )
             else:
@@ -240,6 +317,7 @@ def build_graph(vault: Path) -> dict:
         title = path.stem
         nodes[rel] = {"id": rel, "title": title, "path": rel, "kind": "page"}
         title_to_id[title.lower()] = rel
+        title_to_id[titleize_slug(title).lower()] = rel
 
     for path in files:
         source = path.relative_to(vault).as_posix()
@@ -348,7 +426,18 @@ def file_back(vault: Path, title: str, body: str, folder: str = "wiki/syntheses"
         with page_path.open("a", encoding="utf-8") as handle:
             handle.write(f"\n## Update {now_iso()}\n\n{body.strip()}\n")
     else:
-        page_path.write_text(f"# {title}\n\n{body.strip()}\n", encoding="utf-8")
+        page_path.write_text(
+            frontmatter_block(
+                {
+                    "tags": ["ghpf/synthesis"],
+                    "source": "file-back",
+                    "created": now_iso(),
+                    "aliases": [title],
+                }
+            )
+            + f"# {title}\n\n{body.strip()}\n",
+            encoding="utf-8",
+        )
 
     rel = page_path.relative_to(vault).as_posix()
     ensure_index_entry(vault, rel, title)
@@ -359,6 +448,311 @@ def file_back(vault: Path, title: str, body: str, folder: str = "wiki/syntheses"
     manifest.setdefault("operations", []).append({"type": "file_back", "time": now_iso(), "page": rel})
     save_manifest(vault, manifest)
     return page_path
+
+
+def quality_score(page: Path, source_text: str | None = None, consistency: float | None = None, suggestions: float | None = None, coverage: float | None = None) -> dict:
+    content = page.read_text(encoding="utf-8", errors="ignore")
+    frontmatter, body = parse_frontmatter(content)
+    filled = sum(1 for field in QUALITY_REQUIRED_FIELDS if frontmatter.get(field))
+    completeness = filled / len(QUALITY_REQUIRED_FIELDS)
+    link_count = len(WIKILINK_RE.findall(body))
+    if link_count == 0:
+        connections = 0.2
+    elif link_count <= 2:
+        connections = 0.6
+    elif link_count <= 8:
+        connections = 1.0
+    else:
+        connections = 0.8
+
+    coverage_value = coverage
+    if coverage_value is None:
+        checked = len(re.findall(r"- \[[xX]\]", body))
+        unchecked = len(re.findall(r"- \[ \]", body))
+        if checked or unchecked:
+            coverage_value = checked / max(checked + unchecked, 1)
+        elif source_text:
+            source_terms = set(extract_terms(source_text, limit=20))
+            body_terms = set(extract_terms(body, limit=80))
+            coverage_value = len(source_terms & body_terms) / max(len(source_terms), 1)
+        else:
+            coverage_value = 0.5
+
+    consistency_value = 0.5 if consistency is None else consistency
+    suggestions_value = 0.5 if suggestions is None else suggestions
+    breakdown = {
+        "completeness": {"value": round(completeness, 3), "weight": QUALITY_WEIGHTS["completeness"], "filled": filled, "required": QUALITY_REQUIRED_FIELDS},
+        "connections": {"value": round(connections, 3), "weight": QUALITY_WEIGHTS["connections"], "wikilinks": link_count, "target_range": "3-8"},
+        "coverage": {"value": round(coverage_value, 3), "weight": QUALITY_WEIGHTS["coverage"]},
+        "consistency": {"value": round(consistency_value, 3), "weight": QUALITY_WEIGHTS["consistency"]},
+        "suggestions": {"value": round(suggestions_value, 3), "weight": QUALITY_WEIGHTS["suggestions"]},
+    }
+    score = round(sum(item["value"] * item["weight"] for item in breakdown.values()), 3)
+    return {"page": str(page), "lint_score": score, "passed": score >= 0.7, "threshold": 0.7, "breakdown": breakdown}
+
+
+def run_quality(vault: Path, pages: list[str], strict: bool = False, consistency: float | None = None, suggestions: float | None = None, coverage: float | None = None) -> dict:
+    vault = vault.expanduser()
+    selected = [vault / page for page in pages] if pages else [p for p in markdown_files(vault) if p.name not in {"index.md", "log.md", "overview.md"}]
+    results = []
+    for page in selected:
+        if page.exists() and page.is_file():
+            results.append(quality_score(page, consistency=consistency, suggestions=suggestions, coverage=coverage))
+        else:
+            results.append({"page": str(page), "error": "FILE_NOT_FOUND", "passed": False})
+    report = {
+        "ok": all(item.get("passed") for item in results) if strict else True,
+        "strict": strict,
+        "results": results,
+        "average_score": round(sum(item.get("lint_score", 0.0) for item in results) / max(len(results), 1), 3),
+    }
+    out = vault / "swarmvault" / "exports" / "quality-report.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
+def vault_relative_path(vault: Path, value: str) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    return vault.expanduser() / path
+
+
+def extract_sections(content: str) -> dict[str, str]:
+    _, body = parse_frontmatter(content)
+    sections = {}
+    current = "(intro)"
+    lines = []
+    for line in body.splitlines():
+        if re.match(r"^##\s+", line):
+            if lines:
+                sections[current] = "\n".join(lines).strip()
+            current = line.strip()
+            lines = []
+        else:
+            lines.append(line)
+    if lines:
+        sections[current] = "\n".join(lines).strip()
+    return sections
+
+
+def section_diff(existing: Path, new: Path) -> dict:
+    old_sections = extract_sections(existing.read_text(encoding="utf-8", errors="ignore"))
+    new_sections = extract_sections(new.read_text(encoding="utf-8", errors="ignore"))
+    results = []
+    matched_new = set()
+
+    for old_heading, old_body in old_sections.items():
+        if old_heading == "(intro)":
+            continue
+        if old_heading in new_sections:
+            matched_new.add(old_heading)
+            similarity = SequenceMatcher(None, old_body, new_sections[old_heading]).ratio()
+            if similarity < 1.0:
+                results.append({"type": "CHANGED", "heading": old_heading, "similarity": round(similarity, 3)})
+            continue
+        best_heading = None
+        best_score = 0.0
+        for heading, body in new_sections.items():
+            if heading in matched_new or heading == "(intro)":
+                continue
+            heading_score = SequenceMatcher(None, old_heading, heading).ratio()
+            body_score = SequenceMatcher(None, old_body, body).ratio()
+            score = max(heading_score, body_score * 0.8)
+            if score >= 0.4 and body_score >= 0.5 and score > best_score:
+                best_heading = heading
+                best_score = score
+        if best_heading:
+            matched_new.add(best_heading)
+            results.append({"type": "RENAMED", "old_heading": old_heading, "heading": best_heading, "similarity": round(best_score, 3)})
+        else:
+            results.append({"type": "REMOVED", "heading": old_heading})
+
+    for heading, body in new_sections.items():
+        if heading not in matched_new and heading != "(intro)":
+            results.append({"type": "NEW", "heading": heading, "preview": body[:160].replace("\n", " ")})
+
+    return {
+        "summary": {
+            "new": sum(1 for item in results if item["type"] == "NEW"),
+            "changed": sum(1 for item in results if item["type"] == "CHANGED"),
+            "removed": sum(1 for item in results if item["type"] == "REMOVED"),
+            "renamed": sum(1 for item in results if item["type"] == "RENAMED"),
+        },
+        "sections": results,
+    }
+
+
+def state_path(vault: Path) -> Path:
+    return vault / "swarmvault" / "state" / "pipeline-state.json"
+
+
+def load_state(vault: Path) -> dict:
+    path = state_path(vault)
+    if not path.exists():
+        return {"created_at": now_iso(), "completed": {}, "current": PIPELINE_STEPS[0], "errors": []}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_state(vault: Path, state: dict) -> None:
+    path = state_path(vault)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def state_action(vault: Path, action: str, step: str | None = None) -> dict:
+    vault = vault.expanduser()
+    if action == "init":
+        state = {"created_at": now_iso(), "completed": {}, "current": PIPELINE_STEPS[0], "errors": []}
+        save_state(vault, state)
+        return state
+    state = load_state(vault)
+    if action == "show":
+        return {**state, "progress": f"{len(state.get('completed', {}))}/{len(PIPELINE_STEPS)}"}
+    if step not in PIPELINE_STEPS:
+        return {"error": "INVALID_STEP", "valid_steps": PIPELINE_STEPS}
+    step_index = PIPELINE_STEPS.index(step)
+    missing = [prior for prior in PIPELINE_STEPS[:step_index] if prior not in state.get("completed", {})]
+    if action == "check":
+        return {"step": step, "ready": not missing, "missing": missing, "completed": list(state.get("completed", {}).keys())}
+    if action == "complete":
+        if missing:
+            error = {"error": "STEP_SKIP_DETECTED", "step": step, "missing": missing}
+            state.setdefault("errors", []).append({**error, "time": now_iso()})
+            save_state(vault, state)
+            return error
+        state.setdefault("completed", {})[step] = now_iso()
+        state["current"] = PIPELINE_STEPS[step_index + 1] if step_index + 1 < len(PIPELINE_STEPS) else "done"
+        save_state(vault, state)
+        return state
+    return {"error": "INVALID_ACTION"}
+
+
+def graph_index(vault: Path) -> tuple[dict[str, Path], dict[str, set[str]], dict[str, set[str]]]:
+    pages = markdown_files(vault)
+    page_by_title = {}
+    for page in pages:
+        page_by_title[page.stem.lower()] = page
+        page_by_title[titleize_slug(page.stem).lower()] = page
+    outgoing = {p.relative_to(vault).as_posix(): set() for p in pages}
+    incoming = {p.relative_to(vault).as_posix(): set() for p in pages}
+    for page in pages:
+        source_rel = page.relative_to(vault).as_posix()
+        text = page.read_text(encoding="utf-8", errors="ignore")
+        for target in WIKILINK_RE.findall(text):
+            target_page = page_by_title.get(target.strip().lower())
+            if target_page:
+                target_rel = target_page.relative_to(vault).as_posix()
+                outgoing[source_rel].add(target_rel)
+                incoming.setdefault(target_rel, set()).add(source_rel)
+    return page_by_title, outgoing, incoming
+
+
+def link_audit(vault: Path) -> dict:
+    lint = lint_wiki(vault)
+    _, outgoing, incoming = graph_index(vault.expanduser())
+    total_links = sum(len(v) for v in outgoing.values())
+    one_way = []
+    for source, targets in outgoing.items():
+        for target in targets:
+            if source not in outgoing.get(target, set()):
+                one_way.append({"source": source, "target": target})
+    report = {
+        "pages": len(outgoing),
+        "links": total_links,
+        "average_links_per_page": round(total_links / max(len(outgoing), 1), 3),
+        "broken_links": lint["broken_links"],
+        "orphans": [page for page in outgoing if not outgoing.get(page) and not incoming.get(page)],
+        "deadends": [page for page in outgoing if not outgoing.get(page) and incoming.get(page)],
+        "hubs": sorted([page for page, links in outgoing.items() if len(links) + len(incoming.get(page, set())) >= 10]),
+        "one_way_links": one_way,
+    }
+    out = vault.expanduser() / "swarmvault" / "exports" / "link-audit.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
+def page_terms(page: Path) -> set[str]:
+    text = page.read_text(encoding="utf-8", errors="ignore")
+    return set(extract_terms(text, limit=60))
+
+
+def link_strengthen(vault: Path, page_rel: str, max_links: int = 5, backlink: bool = False) -> dict:
+    vault = vault.expanduser()
+    page = vault / page_rel
+    if not page.exists():
+        return {"error": "FILE_NOT_FOUND", "page": page_rel}
+    target_terms = page_terms(page)
+    existing_text = page.read_text(encoding="utf-8", errors="ignore")
+    existing_links = {link.lower() for link in WIKILINK_RE.findall(existing_text)}
+    candidates = []
+    for other in markdown_files(vault):
+        if other == page or other.name in {"index.md", "log.md"}:
+            continue
+        overlap = target_terms & page_terms(other)
+        if not overlap or other.stem.lower() in existing_links or titleize_slug(other.stem).lower() in existing_links:
+            continue
+        candidates.append((len(overlap), other, sorted(overlap)[:8]))
+    candidates.sort(key=lambda item: (-item[0], item[1].as_posix()))
+    selected = candidates[:max_links]
+    if selected:
+        with page.open("a", encoding="utf-8") as handle:
+            handle.write("\n## Related Notes\n\n")
+            for score, other, overlap in selected:
+                title = titleize_slug(other.stem)
+                handle.write(f"- [[{title}]] - overlap: {', '.join(overlap)}\n")
+        if backlink:
+            source_title = titleize_slug(page.stem)
+            for _, other, _ in selected:
+                text = other.read_text(encoding="utf-8", errors="ignore")
+                link = f"[[{source_title}]]"
+                if link not in text:
+                    with other.open("a", encoding="utf-8") as handle:
+                        handle.write(f"\n## Backlinks\n\n- {link}\n")
+    report = {
+        "page": page_rel,
+        "links_added": [{"page": other.relative_to(vault).as_posix(), "score": score, "overlap": overlap} for score, other, overlap in selected],
+        "backlink": backlink,
+    }
+    out = vault / "swarmvault" / "exports" / "link-strengthen.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
+def command_available(command: str) -> bool:
+    return shutil.which(command) is not None
+
+
+def python_module_available(module: str) -> bool:
+    result = subprocess.run(
+        ["python3", "-c", f"import {module}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def capabilities(vault: Path | None = None) -> dict:
+    modules = ["pypdf", "PyPDF2", "docx", "pptx", "openpyxl", "networkx", "youtube_transcript_api", "pytesseract", "playwright"]
+    caps = {
+        "commands": {name: command_available(name) for name in ["git", "node", "npx", "playwright", "yt-dlp", "tesseract", "obsidian"]},
+        "python_modules": {name: python_module_available(name) for name in modules},
+        "optional_modes": {
+            "basic_wikilink_search": True,
+            "graph_sidecar": True,
+            "youtube_ingest_ready": command_available("yt-dlp") or python_module_available("youtube_transcript_api"),
+            "ocr_ready": command_available("tesseract") or python_module_available("pytesseract"),
+            "office_extract_ready": python_module_available("docx") or python_module_available("pptx") or python_module_available("openpyxl"),
+            "playwright_ready": command_available("playwright") or python_module_available("playwright") or command_available("npx"),
+        },
+    }
+    if vault is not None:
+        caps["vault"] = doctor(vault)
+    return caps
 
 
 def lint_wiki(vault: Path) -> dict:
@@ -411,6 +805,7 @@ def lint_wiki(vault: Path) -> dict:
         "index_missing": index_missing,
         "manifest_missing": manifest_missing,
         "missing_required": missing_required,
+        "quality": run_quality(vault, [p.relative_to(vault).as_posix() for p in pages if p.name not in {"index.md", "log.md", "overview.md"}], strict=False),
     }
     report_path = vault / "swarmvault" / "exports" / "lint-report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -470,6 +865,36 @@ def main() -> int:
     doctor_p = sub.add_parser("doctor")
     doctor_p.add_argument("--vault", default=".")
 
+    quality_p = sub.add_parser("quality")
+    quality_p.add_argument("--vault", default=".")
+    quality_p.add_argument("--strict", action="store_true")
+    quality_p.add_argument("--coverage", type=float)
+    quality_p.add_argument("--consistency", type=float)
+    quality_p.add_argument("--suggestions", type=float)
+    quality_p.add_argument("pages", nargs="*", help="Wiki page paths relative to the vault. Defaults to all wiki pages.")
+
+    diff_p = sub.add_parser("diff")
+    diff_p.add_argument("--vault", default=".")
+    diff_p.add_argument("existing", help="Existing Markdown page path, absolute or vault-relative.")
+    diff_p.add_argument("new", help="New Markdown page path, absolute or vault-relative.")
+
+    state_p = sub.add_parser("state")
+    state_p.add_argument("--vault", default=".")
+    state_p.add_argument("action", choices=["init", "show", "check", "complete"])
+    state_p.add_argument("step", nargs="?", choices=PIPELINE_STEPS)
+
+    link_audit_p = sub.add_parser("link-audit")
+    link_audit_p.add_argument("--vault", default=".")
+
+    link_strengthen_p = sub.add_parser("link-strengthen")
+    link_strengthen_p.add_argument("--vault", default=".")
+    link_strengthen_p.add_argument("--page", required=True, help="Wiki page path relative to the vault.")
+    link_strengthen_p.add_argument("--max-links", type=int, default=5)
+    link_strengthen_p.add_argument("--backlink", action="store_true")
+
+    capabilities_p = sub.add_parser("capabilities")
+    capabilities_p.add_argument("--vault")
+
     args = parser.parse_args()
     if args.command == "ingest":
         print(json.dumps(ingest_sources(Path(args.vault), args.sources, move=args.move), ensure_ascii=False, indent=2))
@@ -491,6 +916,34 @@ def main() -> int:
         print(path)
     elif args.command == "doctor":
         print(json.dumps(doctor(Path(args.vault).expanduser()), ensure_ascii=False, indent=2))
+    elif args.command == "quality":
+        report = run_quality(
+            Path(args.vault),
+            args.pages,
+            strict=args.strict,
+            consistency=args.consistency,
+            suggestions=args.suggestions,
+            coverage=args.coverage,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        if not report["ok"]:
+            return 1
+    elif args.command == "diff":
+        vault = Path(args.vault)
+        report = section_diff(vault_relative_path(vault, args.existing), vault_relative_path(vault, args.new))
+        out = vault.expanduser() / "swarmvault" / "exports" / "section-diff.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    elif args.command == "state":
+        print(json.dumps(state_action(Path(args.vault), args.action, args.step), ensure_ascii=False, indent=2))
+    elif args.command == "link-audit":
+        print(json.dumps(link_audit(Path(args.vault)), ensure_ascii=False, indent=2))
+    elif args.command == "link-strengthen":
+        print(json.dumps(link_strengthen(Path(args.vault), args.page, max_links=args.max_links, backlink=args.backlink), ensure_ascii=False, indent=2))
+    elif args.command == "capabilities":
+        vault = Path(args.vault).expanduser() if args.vault else None
+        print(json.dumps(capabilities(vault), ensure_ascii=False, indent=2))
     return 0
 
 
