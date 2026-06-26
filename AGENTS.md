@@ -22,6 +22,18 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 
 ## Expected Workflow
 
+### Natural Source LLM Wiki Trigger
+
+When the user says a short natural-language request such as "이 문서를 LLM Wiki에 저장해줘", "이 PDF 위키화해줘", "이 웹주소를 LLM Wiki에 저장해줘", "이 유튜브를 위키에 저장해줘", "save this URL to the LLM Wiki", or "ingest this paper/video/page into the wiki":
+
+1. Treat it as the full source intake workflow, not a request for a manual plan.
+2. Resolve the source from the provided attachment/path/URL, or from the only plausible PDF/Office/HTML source in the current working directory. If multiple sources are plausible, ask which one.
+3. Resolve the vault from the user's explicit path, the current project/vault context, an existing `./my-vault`, or create `./my-vault` via `./install.sh` when needed.
+4. Run `python3 scripts/ghpf_wiki.py extract --vault <vault> --ingest <source>` for PDF, web page, local HTML, Office/HWP, or YouTube transcript intake.
+5. If the user explicitly asks for YouTube/video/image visual frames, also run `python3 scripts/ghpf_wiki.py video-frames --vault <vault> --source <source> --ingest --figure-card`.
+6. Run `python3 scripts/ghpf_wiki.py index --vault <vault>` and `python3 scripts/ghpf_wiki.py lint --vault <vault>`.
+7. Report the source note path, preserved original path or source URL, `evidence/index.jsonl`, evidence record count, and lint result.
+
 1. Detect or select a profile: `research`, `trading`, `codebase`, `mixed`, or `general`.
 2. Create missing vault folders.
 3. Extract PDF, web, local HTML, Office/HWP, YouTube transcript, and video/image frame sources into Markdown when needed.

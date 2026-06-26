@@ -66,6 +66,16 @@ python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-yout
 python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <docx-or-pptx-or-xlsx-or-hwp>
 ```
 
+Natural-language aliases such as "이 문서를 LLM Wiki에 저장해줘", "이 PDF 위키화해줘", "이 웹주소를 LLM Wiki에 저장해줘", "이 유튜브를 위키에 저장해줘", or "save this URL to the LLM Wiki" mean:
+
+```bash
+python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube-or-office-doc>
+python3 scripts/ghpf_wiki.py index --vault <path>
+python3 scripts/ghpf_wiki.py lint --vault <path>
+```
+
+Use the explicit vault when provided; otherwise use the current known vault or `./my-vault` after setup. Report the source note, preserved original or source URL, `evidence/index.jsonl`, evidence count, and lint status. If the user explicitly asks for YouTube/video/image frame analysis, also run `video-frames --ingest --figure-card`.
+
 Extraction tiers:
 
 1. PDF: `opendataloader-pdf`, then `marker_single`, then `pdfplumber`, then `pypdf`/`PyPDF2`.

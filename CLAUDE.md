@@ -31,6 +31,18 @@ python3 scripts/ghpf_wiki.py task start --vault <path> --title "<task>"
 python3 scripts/ghpf_wiki.py task finish --vault <path> --title "<task>" --note "<result>"
 ```
 
+Natural source trigger:
+
+When the user says "이 문서를 LLM Wiki에 저장해줘", "이 PDF 위키화해줘", "이 웹주소를 LLM Wiki에 저장해줘", "이 유튜브를 위키에 저장해줘", "save this URL to the LLM Wiki", or similar, run the full intake automatically:
+
+```bash
+python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube-or-office-doc>
+python3 scripts/ghpf_wiki.py index --vault <path>
+python3 scripts/ghpf_wiki.py lint --vault <path>
+```
+
+Use the explicit vault if provided; otherwise use the current known vault or `./my-vault` after setup. For YouTube/video/image visual frames, also use `video-frames --ingest --figure-card` when the user asks for frame/image analysis. Report the created source note, preserved original or source URL, `evidence/index.jsonl`, evidence count, and lint result.
+
 For Claude Code slash-command style use, say:
 
 - `/ghpf-setup` to initialize or repair a vault

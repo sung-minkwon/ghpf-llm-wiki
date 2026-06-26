@@ -29,6 +29,22 @@ python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-yout
 python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <docx-or-pptx-or-xlsx-or-hwp>
 ```
 
+Natural-language alias:
+
+If the user says "이 문서를 LLM Wiki에 저장해줘", "이 PDF 위키화해줘", "이 웹주소를 LLM Wiki에 저장해줘", "이 유튜브를 위키에 저장해줘", or "save this URL to the LLM Wiki", treat it as:
+
+```bash
+python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube-or-office-doc>
+python3 scripts/ghpf_wiki.py index --vault <path>
+python3 scripts/ghpf_wiki.py lint --vault <path>
+```
+
+Use the given/current/default vault and report the created source note, preserved original or source URL, `evidence/index.jsonl`, evidence count, and lint result. If the user asks for video/image frames, additionally run:
+
+```bash
+python3 scripts/ghpf_wiki.py video-frames --vault <path> --source <youtube-or-video-or-image> --ingest --figure-card
+```
+
 ## /ghpf-video-frames
 
 Sample YouTube, local video, or image frames into visual evidence, ingest them, and create a figure card:
