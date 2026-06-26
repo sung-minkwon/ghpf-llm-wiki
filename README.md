@@ -196,6 +196,13 @@ For figure work, use `figure-card` to capture reusable figure patterns, `figure-
 
 For video/image visual evidence, `video-frames` stores sampled frames in `raw/figures/video-frames/`, writes a frame-analysis Markdown source, can ingest it into `wiki/sources/`, and can create a figure card for later `figure-insight` work.
 
+Extraction preserves ontology-ready evidence by default:
+
+- Local original files and downloaded web/PDF assets are copied into `raw/originals/` with SHA256 hashes.
+- Extracted evidence locations are indexed in `evidence/index.jsonl` with stable `evidence_id` / `chunk_id` values.
+- PDF pages/tables, YouTube transcript timestamps, web image candidates, and video/image frames keep machine-readable location metadata for later OpenCrab promotion.
+- Source notes in `wiki/sources/` link back to the preserved original and evidence index when `extract --ingest` is used.
+
 Document parsing is tiered and optional-tool aware:
 
 - PDF: `opendataloader-pdf` -> `marker_single` -> `pdfplumber` -> `pypdf`/`PyPDF2`

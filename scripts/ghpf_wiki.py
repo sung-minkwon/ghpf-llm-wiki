@@ -130,6 +130,20 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def jsonable(value):
+    if isinstance(value, Path):
+        return value.as_posix()
+    if isinstance(value, dict):
+        return {key: jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [jsonable(item) for item in value]
+    return value
+
+
 def titleize_slug(slug: str) -> str:
     return re.sub(r"[-_]+", " ", slug).strip().title()
 
@@ -182,6 +196,63 @@ def copy_to_raw(vault: Path, source: Path) -> Path:
     if not target.exists():
         shutil.copy2(source, target)
     return target
+
+
+def vault_rel(vault: Path, path: Path) -> str:
+    try:
+        return path.relative_to(vault).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def original_asset_path(vault: Path, label: str, digest: str, suffix: str) -> Path:
+    root = vault / "raw" / "originals"
+    root.mkdir(parents=True, exist_ok=True)
+    clean_suffix = suffix.lower() if suffix else ".bin"
+    if not clean_suffix.startswith("."):
+        clean_suffix = f".{clean_suffix}"
+    return root / f"{slugify(Path(label).stem or label)[:80]}-{digest[:12]}{clean_suffix}"
+
+
+def preserve_original_file(vault: Path, source: Path, source_label: str | None = None) -> dict:
+    source = source.expanduser()
+    digest = sha256_file(source)
+    target = original_asset_path(vault, source_label or source.name, digest, source.suffix or ".bin")
+    if not target.exists():
+        if source.resolve() == target.resolve():
+            pass
+        else:
+            shutil.copy2(source, target)
+    return {
+        "kind": "file",
+        "source": str(source),
+        "path": vault_rel(vault, target),
+        "sha256": digest,
+        "bytes": target.stat().st_size,
+    }
+
+
+def preserve_original_bytes(vault: Path, label: str, body: bytes, suffix: str, source_url: str | None = None, content_type: str | None = None) -> dict:
+    digest = hashlib.sha256(body).hexdigest()
+    target = original_asset_path(vault, label, digest, suffix)
+    if not target.exists():
+        target.write_bytes(body)
+    record = {
+        "kind": "url" if source_url else "bytes",
+        "source": source_url or label,
+        "path": vault_rel(vault, target),
+        "sha256": digest,
+        "bytes": len(body),
+    }
+    if source_url:
+        record["source_url"] = source_url
+    if content_type:
+        record["content_type"] = content_type
+    return record
+
+
+def external_original_record(source_url: str) -> dict:
+    return {"kind": "url", "source": source_url, "source_url": source_url}
 
 
 def summarize_text(text: str, max_lines: int = 12) -> list[str]:
@@ -489,6 +560,185 @@ def write_extracted_markdown(vault: Path, source_label: str, kind: str, title: s
     return out
 
 
+def evidence_index_path(vault: Path) -> Path:
+    return vault / "evidence" / "index.jsonl"
+
+
+def timestamp_seconds(stamp: str) -> int:
+    parts = [int(part) for part in stamp.split(":")]
+    if len(parts) == 3:
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    if len(parts) == 2:
+        return parts[0] * 60 + parts[1]
+    return parts[0] if parts else 0
+
+
+def make_evidence_record(
+    vault: Path,
+    source_label: str,
+    source_path: Path,
+    extraction_kind: str,
+    title: str,
+    evidence_kind: str,
+    locator: str,
+    text: str,
+    location: dict | None = None,
+    parser: str | None = None,
+    original: dict | None = None,
+) -> dict:
+    clean_text = normalize_extracted_text(text, max_chars=12000)
+    source_ref = vault_rel(vault, source_path)
+    evidence_id = "ev_" + hashlib.sha256(f"{source_label}\n{extraction_kind}\n{locator}".encode("utf-8", errors="ignore")).hexdigest()[:20]
+    record = {
+        "evidence_id": evidence_id,
+        "chunk_id": evidence_id,
+        "evidence_kind": evidence_kind,
+        "title": title,
+        "source": source_label,
+        "source_path": source_ref,
+        "extraction_kind": extraction_kind,
+        "locator": locator,
+        "location": location or {},
+        "text": clean_text,
+        "content_sha256": sha256_text(clean_text),
+        "indexed_at": now_iso(),
+    }
+    if is_url(source_label):
+        record["source_url"] = source_label
+    if parser:
+        record["parser"] = parser
+    if original:
+        record["original"] = jsonable(original)
+        if original.get("path"):
+            record["original_path"] = original["path"]
+        if original.get("sha256"):
+            record["original_sha256"] = original["sha256"]
+        if original.get("source_url"):
+            record["source_url"] = original["source_url"]
+    return record
+
+
+def markdown_block(text: str, start: int, end_pattern: str) -> str:
+    body = text[start:]
+    match = re.search(end_pattern, body, flags=re.MULTILINE)
+    return body[: match.start()].strip() if match else body.strip()
+
+
+def extracted_evidence_records(
+    vault: Path,
+    source_label: str,
+    source_path: Path,
+    extraction_kind: str,
+    title: str,
+    text: str,
+    parser: str | None = None,
+    original: dict | None = None,
+) -> list[dict]:
+    records = []
+
+    for page_match in re.finditer(r"^## Page (\d+)\s*$", text, flags=re.MULTILINE):
+        page = int(page_match.group(1))
+        body = markdown_block(text, page_match.end(), r"^## Page \d+\s*$")
+        if body:
+            records.append(make_evidence_record(vault, source_label, source_path, extraction_kind, title, "page", f"page:{page}", body, {"page": page}, parser, original))
+        for table_match in re.finditer(r"^### Table (\d+)\s*$", body, flags=re.MULTILINE):
+            table = int(table_match.group(1))
+            table_body = markdown_block(body, table_match.end(), r"^### ")
+            if table_body:
+                records.append(make_evidence_record(vault, source_label, source_path, extraction_kind, title, "table", f"page:{page}:table:{table}", table_body, {"page": page, "table": table}, parser, original))
+
+    for match in re.finditer(r"^- \[(\d{2}:\d{2}:\d{2})\]\s+(.+)$", text, flags=re.MULTILINE):
+        stamp, line = match.groups()
+        records.append(make_evidence_record(vault, source_label, source_path, extraction_kind, title, "timestamp", f"timestamp:{stamp}", line, {"timestamp": stamp, "seconds": timestamp_seconds(stamp)}, parser, original))
+
+    for match in re.finditer(r"^- (\d+)\. (.*?): `([^`]+)` score=([0-9.]+) reasons=(.*)$", text, flags=re.MULTILINE):
+        index, label, src, score, reasons = match.groups()
+        records.append(
+            make_evidence_record(
+                vault,
+                source_label,
+                source_path,
+                extraction_kind,
+                title,
+                "image_candidate",
+                f"image-candidate:{index}",
+                f"{label}: {src}",
+                {"candidate_index": int(index), "src": src, "score": float(score), "reasons": [item.strip() for item in reasons.split(",") if item.strip()]},
+                parser,
+                original,
+            )
+        )
+
+    for match in re.finditer(r"^- Frame (\d+): `([^`]+)`(.*)$", text, flags=re.MULTILINE):
+        index, frame_path, rest = match.groups()
+        records.append(make_evidence_record(vault, source_label, source_path, extraction_kind, title, "video_frame", f"frame:{index}", f"{frame_path} {rest}".strip(), {"frame_index": int(index), "frame_path": frame_path}, parser, original))
+
+    if not records:
+        for heading_match in re.finditer(r"^## (Slide \d+|Sheet: .+|Table \d+|Metadata|Transcript|Image Candidates|Frame Files)\s*$", text, flags=re.MULTILINE):
+            heading = heading_match.group(1).strip()
+            body = markdown_block(text, heading_match.end(), r"^## ")
+            if body:
+                records.append(make_evidence_record(vault, source_label, source_path, extraction_kind, title, "section", f"section:{slugify(heading)}", body, {"section": heading}, parser, original))
+
+    if not records and text.strip():
+        records.append(make_evidence_record(vault, source_label, source_path, extraction_kind, title, "document", "document", text, {}, parser, original))
+    return records
+
+
+def upsert_evidence_records(vault: Path, records: list[dict]) -> list[dict]:
+    if not records:
+        return []
+    path = evidence_index_path(vault)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    by_id = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if item.get("evidence_id"):
+                by_id[item["evidence_id"]] = item
+    for record in records:
+        by_id[record["evidence_id"]] = jsonable(record)
+    path.write_text("\n".join(json.dumps(item, ensure_ascii=False, sort_keys=True) for item in by_id.values()) + "\n", encoding="utf-8")
+    return records
+
+
+def evidence_records_for_source_path(vault: Path, source_path: Path) -> list[dict]:
+    path = evidence_index_path(vault)
+    if not path.exists():
+        return []
+    source_ref = vault_rel(vault, source_path)
+    records = []
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if item.get("source_path") == source_ref:
+            records.append(item)
+    return records
+
+
+def index_extracted_evidence(
+    vault: Path,
+    source_label: str,
+    source_path: Path,
+    extraction_kind: str,
+    title: str,
+    text: str,
+    parser: str | None = None,
+    original: dict | None = None,
+) -> list[dict]:
+    records = extracted_evidence_records(vault, source_label, source_path, extraction_kind, title, text, parser=parser, original=original)
+    return upsert_evidence_records(vault, records)
+
+
 def image_average_hash(path: Path) -> str:
     try:
         from PIL import Image
@@ -622,43 +872,47 @@ def extract_video_frames(video_path: Path, frames_dir: Path, every_seconds: floa
     return frames
 
 
-def prepare_frame_source(vault: Path, source_value: str, every_seconds: float, max_frames: int) -> tuple[str, str, Path, list[Path], list[str]]:
+def prepare_frame_source(vault: Path, source_value: str, every_seconds: float, max_frames: int) -> tuple[str, str, Path, list[Path], list[str], dict]:
     value = str(source_value)
     warnings = []
     run_id = video_frame_run_id(value)
     root = frame_asset_root(vault, run_id)
     if is_youtube_url(value):
         video_path, title, video_warnings = download_youtube_video(value, root)
+        original = preserve_original_file(vault, video_path, source_label=value)
+        original["source_url"] = value
         warnings.extend(video_warnings)
         frames = extract_video_frames(video_path, root, every_seconds=every_seconds, max_frames=max_frames)
-        return run_id, title, root, frames, warnings
+        return run_id, title, root, frames, warnings, original
     if is_url(value):
         body, content_type = fetch_url(value, max_bytes=100_000_000)
         suffix = Path(urllib.parse.urlparse(value).path).suffix.lower()
         title = page_title_from_path(Path(urllib.parse.urlparse(value).path or "remote-video"))
+        original = preserve_original_bytes(vault, value, body, suffix or ".bin", source_url=value, content_type=content_type)
         if content_type.startswith("image/") or suffix in IMAGE_SUFFIXES:
             target = root / f"frame_000001{suffix if suffix in IMAGE_SUFFIXES else '.jpg'}"
             target.write_bytes(body)
-            return run_id, title, root, [target], warnings
+            return run_id, title, root, [target], warnings, original
         if content_type.startswith("video/") or suffix in VIDEO_SUFFIXES:
             video_path = root / f"source{suffix if suffix in VIDEO_SUFFIXES else '.mp4'}"
             video_path.write_bytes(body)
             frames = extract_video_frames(video_path, root, every_seconds=every_seconds, max_frames=max_frames)
-            return run_id, title, root, frames, warnings
+            return run_id, title, root, frames, warnings, original
         raise RuntimeError(f"Unsupported URL content type for frame analysis: {content_type or suffix}")
     path = Path(value).expanduser()
     if not path.exists() or not path.is_file():
         raise RuntimeError("Frame source is missing or not a file.")
     title = page_title_from_path(path)
     suffix = path.suffix.lower()
+    original = preserve_original_file(vault, path)
     if suffix in IMAGE_SUFFIXES:
         target = root / f"frame_000001{suffix}"
         if not target.exists():
             shutil.copy2(path, target)
-        return run_id, title, root, [target], warnings
+        return run_id, title, root, [target], warnings, original
     if suffix in VIDEO_SUFFIXES:
         frames = extract_video_frames(path, root, every_seconds=every_seconds, max_frames=max_frames)
-        return run_id, title, root, frames, warnings
+        return run_id, title, root, frames, warnings, original
     raise RuntimeError(f"Unsupported frame source suffix: {suffix}")
 
 
@@ -685,7 +939,7 @@ def analyze_frames(vault: Path, frames: list[Path], run_id: str, ocr: bool = Fal
     return results, warnings
 
 
-def write_video_frame_markdown(vault: Path, source_label: str, title: str, run_id: str, frames: list[dict], warnings: list[str]) -> Path:
+def write_video_frame_markdown(vault: Path, source_label: str, title: str, run_id: str, frames: list[dict], warnings: list[str], original: dict | None = None) -> Path:
     warning_lines = [f"- {warning}" for warning in warnings] or ["- None"]
     frame_lines = []
     ocr_lines = []
@@ -732,7 +986,9 @@ def write_video_frame_markdown(vault: Path, source_label: str, title: str, run_i
             "",
         ]
     )
-    return write_extracted_markdown(vault, source_label, "video-frames", f"{title} Video Frames", text, warnings=warnings)
+    path = write_extracted_markdown(vault, source_label, "video-frames", f"{title} Video Frames", text, warnings=warnings)
+    index_extracted_evidence(vault, source_label, path, "video-frames", f"{title} Video Frames", text, original=original)
+    return path
 
 
 def video_frames_command(
@@ -746,10 +1002,10 @@ def video_frames_command(
     figure_card: bool = False,
 ) -> dict:
     vault = vault.expanduser()
-    run_id, title, root, frame_paths, source_warnings = prepare_frame_source(vault, source, every_seconds, max_frames)
+    run_id, title, root, frame_paths, source_warnings, original = prepare_frame_source(vault, source, every_seconds, max_frames)
     frame_records, analysis_warnings = analyze_frames(vault, frame_paths, run_id, ocr=ocr, ocr_languages=ocr_languages)
     warnings = source_warnings + analysis_warnings
-    source_markdown = write_video_frame_markdown(vault, source, title, run_id, frame_records, warnings)
+    source_markdown = write_video_frame_markdown(vault, source, title, run_id, frame_records, warnings, original=original)
     report = {
         "source": source,
         "run_id": run_id,
@@ -758,6 +1014,8 @@ def video_frames_command(
         "frames": len(frame_records),
         "source_markdown": source_markdown.relative_to(vault).as_posix(),
         "manifest": (vault / "swarmvault" / "exports" / "video-frames" / f"{run_id}.json").relative_to(vault).as_posix(),
+        "original": original,
+        "evidence_index": evidence_index_path(vault).relative_to(vault).as_posix(),
         "warnings": warnings,
     }
     if ingest:
@@ -1249,37 +1507,58 @@ def extract_source_to_markdown(vault: Path, source_value: str | Path) -> dict:
     vault = vault.expanduser()
     value = str(source_value)
     if is_youtube_url(value):
+        original = external_original_record(value)
         title, text, warnings = extract_youtube_transcript(value)
         path = write_extracted_markdown(vault, value, "youtube-transcript", title, text, warnings=warnings)
-        return {"source": value, "path": path, "kind": "youtube-transcript", "extracted": True, "warnings": warnings}
+        records = index_extracted_evidence(vault, value, path, "youtube-transcript", title, text, original=original)
+        return {"source": value, "path": path, "kind": "youtube-transcript", "extracted": True, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": warnings}
     if is_url(value):
         body, content_type, fetch_warnings = fetch_web_content(value)
         if "application/pdf" in content_type.lower() or urllib.parse.urlparse(value).path.lower().endswith(".pdf"):
             pdf_path = save_downloaded_pdf(vault, value, body)
+            original = preserve_original_file(vault, pdf_path, source_label=value)
+            original["source_url"] = value
+            if content_type:
+                original["content_type"] = content_type
             text, warnings, method = extract_pdf_document(pdf_path)
             path = write_extracted_markdown(vault, value, f"url-pdf:{method}", page_title_from_path(pdf_path), text, warnings=fetch_warnings + warnings)
-            return {"source": value, "path": path, "kind": "url-pdf", "parser": method, "extracted": True, "download": pdf_path, "warnings": fetch_warnings + warnings}
+            records = index_extracted_evidence(vault, value, path, f"url-pdf:{method}", page_title_from_path(pdf_path), text, parser=method, original=original)
+            return {"source": value, "path": path, "kind": "url-pdf", "parser": method, "extracted": True, "download": pdf_path, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": fetch_warnings + warnings}
+        original = preserve_original_bytes(vault, value, body, ".html", source_url=value, content_type=content_type)
         title, text, warnings = extract_html_document(decode_response_body(body, content_type), base_url=value)
         path = write_extracted_markdown(vault, value, "web-page", title or urllib.parse.urlparse(value).netloc, text, warnings=fetch_warnings + warnings)
-        return {"source": value, "path": path, "kind": "web-page", "extracted": True, "warnings": fetch_warnings + warnings}
+        records = index_extracted_evidence(vault, value, path, "web-page", title or urllib.parse.urlparse(value).netloc, text, original=original)
+        return {"source": value, "path": path, "kind": "web-page", "extracted": True, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": fetch_warnings + warnings}
 
     path = Path(value).expanduser()
     if not path.exists() or not path.is_file():
         return {"source": value, "error": "missing_or_not_file"}
     suffix = path.suffix.lower()
     if suffix == ".pdf":
+        original = preserve_original_file(vault, path)
         text, warnings, method = extract_pdf_document(path)
         out = write_extracted_markdown(vault, str(path), f"pdf:{method}", page_title_from_path(path), text, warnings=warnings)
-        return {"source": value, "path": out, "kind": "pdf", "parser": method, "extracted": True, "original_path": path, "warnings": warnings}
+        records = index_extracted_evidence(vault, str(path), out, f"pdf:{method}", page_title_from_path(path), text, parser=method, original=original)
+        return {"source": value, "path": out, "kind": "pdf", "parser": method, "extracted": True, "original_path": path, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": warnings}
     if suffix in {".html", ".htm"}:
+        original = preserve_original_file(vault, path)
         title, text, warnings = extract_html_document(path.read_text(encoding="utf-8", errors="ignore"), base_url=path.resolve().as_uri())
         out = write_extracted_markdown(vault, str(path), "html-file", title or page_title_from_path(path), text, warnings=warnings)
-        return {"source": value, "path": out, "kind": "html-file", "extracted": True, "original_path": path, "warnings": warnings}
+        records = index_extracted_evidence(vault, str(path), out, "html-file", title or page_title_from_path(path), text, original=original)
+        return {"source": value, "path": out, "kind": "html-file", "extracted": True, "original_path": path, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": warnings}
     if suffix in OFFICE_SOURCE_SUFFIXES:
+        original = preserve_original_file(vault, path)
         text, warnings, method = extract_office_document(path)
         out = write_extracted_markdown(vault, str(path), f"office:{method}", page_title_from_path(path), text, warnings=warnings)
-        return {"source": value, "path": out, "kind": "office", "parser": method, "extracted": True, "original_path": path, "warnings": warnings}
-    return {"source": value, "path": path, "kind": "file", "extracted": False, "original_path": path}
+        records = index_extracted_evidence(vault, str(path), out, f"office:{method}", page_title_from_path(path), text, parser=method, original=original)
+        return {"source": value, "path": out, "kind": "office", "parser": method, "extracted": True, "original_path": path, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": warnings}
+    linked_evidence = evidence_records_for_source_path(vault, path)
+    original = linked_evidence[0].get("original") if linked_evidence and linked_evidence[0].get("original") else preserve_original_file(vault, path)
+    result = {"source": value, "path": path, "kind": "file", "extracted": False, "original_path": path, "original": original}
+    if linked_evidence:
+        result["evidence_index"] = evidence_index_path(vault)
+        result["evidence_records"] = len(linked_evidence)
+    return result
 
 
 def extract_sources(vault: Path, sources: list[str]) -> dict:
@@ -1294,7 +1573,7 @@ def extract_sources(vault: Path, sources: list[str]) -> dict:
         if result.get("error"):
             skipped.append({"source": result["source"], "reason": result["error"]})
         else:
-            record = {key: (value.as_posix() if isinstance(value, Path) else value) for key, value in result.items() if key != "original_path"}
+            record = {key: jsonable(value) for key, value in result.items() if key != "original_path"}
             extracted.append(record)
     return {"extracted": extracted, "skipped": skipped}
 
@@ -1319,7 +1598,7 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
             continue
         source = prepared["path"]
         if prepared.get("extracted"):
-            extracted.append({key: (value.as_posix() if isinstance(value, Path) else value) for key, value in prepared.items() if key != "original_path"})
+            extracted.append({key: jsonable(value) for key, value in prepared.items() if key != "original_path"})
         if not source.exists() or not source.is_file():
             skipped.append({"source": str(source), "reason": "missing_or_not_file"})
             continue
@@ -1332,6 +1611,13 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
         text = read_text(raw_path)
         title = page_title_from_path(raw_path)
         source_rel = raw_path.relative_to(vault).as_posix()
+        linked_evidence = evidence_records_for_source_path(vault, raw_path)
+        original = prepared.get("original") or {}
+        if linked_evidence and linked_evidence[0].get("original"):
+            original = linked_evidence[0]["original"]
+        evidence_record_count = prepared.get("evidence_records") or len(linked_evidence)
+        original_ref = original.get("path") or original.get("source_url") or original.get("source") or ""
+        evidence_index_rel = evidence_index_path(vault).relative_to(vault).as_posix() if evidence_record_count else ""
         source_note = vault / "wiki" / "sources" / f"{slugify(raw_path.stem)}.md"
         terms = extract_terms(text)
         summary = summarize_text(text)
@@ -1339,16 +1625,22 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
         key_points = source_key_points(text)
 
         source_note.parent.mkdir(parents=True, exist_ok=True)
+        frontmatter = {
+            "tags": ["ghpf/source"],
+            "source": source_rel,
+            "created": now_iso(),
+            "aliases": [title],
+            "sha256": digest,
+        }
+        if original_ref:
+            frontmatter["original"] = original_ref
+        if original.get("sha256"):
+            frontmatter["original_sha256"] = original["sha256"]
+        if evidence_index_rel:
+            frontmatter["evidence_index"] = evidence_index_rel
+            frontmatter["evidence_records"] = evidence_record_count
         source_note.write_text(
-            frontmatter_block(
-                {
-                    "tags": ["ghpf/source"],
-                    "source": source_rel,
-                    "created": now_iso(),
-                    "aliases": [title],
-                    "sha256": digest,
-                }
-            )
+            frontmatter_block(frontmatter)
             +
             "\n".join(
                 [
@@ -1356,6 +1648,9 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
                     "",
                     f"Source: `{source_rel}`",
                     f"SHA256: `{digest}`",
+                    *( [f"Original: `{original_ref}`"] if original_ref else [] ),
+                    *( [f"Original SHA256: `{original['sha256']}`"] if original.get("sha256") else [] ),
+                    *( [f"Evidence index: `{evidence_index_rel}` ({evidence_record_count} records)"] if evidence_index_rel else [] ),
                     "",
                     "## Summary",
                     "",
@@ -1410,13 +1705,21 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
             ensure_index_entry(vault, concept, Path(concept).stem)
 
         manifest.setdefault("sources", []).append(
-            {"path": source_rel, "sha256": digest, "ingested_at": now_iso(), "source_note": page_rel}
+            {
+                "path": source_rel,
+                "sha256": digest,
+                "ingested_at": now_iso(),
+                "source_note": page_rel,
+                "original": jsonable(original) if original else None,
+                "evidence_index": evidence_index_rel or None,
+                "evidence_records": evidence_record_count,
+            }
         )
         manifest.setdefault("generated_pages", []).append(page_rel)
         manifest.setdefault("generated_pages", []).extend(concept_pages)
         manifest.setdefault("operations", []).append({"type": "ingest", "time": now_iso(), "source": source_rel})
         append_log(vault, f"ingested `{source_rel}` into `{page_rel}`.")
-        ingested.append({"source": source_rel, "source_note": page_rel, "concept_pages": concept_pages})
+        ingested.append({"source": source_rel, "source_note": page_rel, "concept_pages": concept_pages, "original": jsonable(original) if original else None, "evidence_index": evidence_index_rel or None, "evidence_records": evidence_record_count})
 
         original_path = prepared.get("original_path")
         if move and isinstance(original_path, Path) and original_path.exists() and not original_path.resolve().is_relative_to((vault / "raw").resolve()):
