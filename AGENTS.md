@@ -18,13 +18,13 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 - Do not rewrite user notes broadly. Merge focused changes and preserve provenance.
 - For setup, run `./install.sh` for the default install or `python3 scripts/setup_vault.py --vault <path> --profile auto` for manual setup.
 - For extract/video-frames/ingest/card/index/search/insight/evaluate/figure-card/figure-insight/figure-export/lint/quality/diff/state/link-audit/link-strengthen/graphify-import/cache-clean/file-back/graph/context/task sidecar work, run `python3 scripts/ghpf_wiki.py --help`.
-- Treat YouTube transcript, OCR, office document, and browser automation support as optional environment capabilities. Check `python3 scripts/ghpf_wiki.py capabilities --vault <path>` before assuming they are installed.
+- Treat advanced PDF parsing, HWP/HWPX conversion, YouTube transcript metadata, OCR, office document parsing, and browser/DeepCloak fallback as optional environment capabilities. Check `python3 scripts/ghpf_wiki.py capabilities --vault <path>` before assuming they are installed.
 
 ## Expected Workflow
 
 1. Detect or select a profile: `research`, `trading`, `codebase`, `mixed`, or `general`.
 2. Create missing vault folders.
-3. Extract PDF, web, local HTML, YouTube transcript, and video/image frame sources into Markdown when needed.
+3. Extract PDF, web, local HTML, Office/HWP, YouTube transcript, and video/image frame sources into Markdown when needed.
 4. Ingest sources into concise source notes and update `wiki/manifest.json`.
 5. Track the pipeline with `state` so setup, ingest, compile, lint, strengthen, file-back, graph, and context work are not skipped.
 6. Extract durable concepts, entities, methods, strategies, claims, and open questions.

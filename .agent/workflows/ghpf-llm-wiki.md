@@ -22,10 +22,11 @@ Read files in `_raw/`, create or update source/concept/entity/project notes in `
 
 ## /ghpf-extract
 
-Extract PDF, web page, local HTML, or YouTube transcript sources and ingest them:
+Extract PDF, web page, local HTML, Office/HWP, or YouTube transcript sources and ingest them:
 
 ```bash
 python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube>
+python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <docx-or-pptx-or-xlsx-or-hwp>
 ```
 
 ## /ghpf-video-frames

@@ -16,6 +16,7 @@ Useful commands:
 ./install.sh
 python3 scripts/setup_vault.py --vault <path> --profile auto
 python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube>
+python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <docx-or-pptx-or-xlsx-or-hwp>
 python3 scripts/ghpf_wiki.py video-frames --vault <path> --source <youtube-or-video-or-image> --ingest --figure-card
 python3 scripts/ghpf_wiki.py card --vault <path> --type paper --all-sources
 python3 scripts/ghpf_wiki.py index --vault <path>

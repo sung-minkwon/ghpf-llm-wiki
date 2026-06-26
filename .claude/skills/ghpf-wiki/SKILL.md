@@ -59,11 +59,20 @@ Use the helper for deterministic intake:
 python3 scripts/ghpf_wiki.py ingest --vault <path> [source files...]
 ```
 
-For PDF, web page, local HTML, or YouTube transcript sources, extract and ingest in one step:
+For PDF, web page, local HTML, Office/HWP, or YouTube transcript sources, extract and ingest in one step:
 
 ```bash
 python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube>
+python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <docx-or-pptx-or-xlsx-or-hwp>
 ```
+
+Extraction tiers:
+
+1. PDF: `opendataloader-pdf`, then `marker_single`, then `pdfplumber`, then `pypdf`/`PyPDF2`.
+2. HWP/HWPX/HWPML: `kordoc` via `npx`, then `hwpjs`.
+3. DOCX/PPTX/XLSX: Python office libraries when installed.
+4. Web/HTML: static extraction plus image/figure candidates, then optional Playwright/DeepCloak fallback.
+5. YouTube: latest `youtube_transcript_api.fetch()` with timestamped lines, metadata from `yt-dlp`, and `yt-dlp` subtitle fallback.
 
 For YouTube, local video, or image visual evidence, sample frames, analyze them, ingest the generated Markdown, and create a figure card:
 

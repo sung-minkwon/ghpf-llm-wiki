@@ -31,11 +31,14 @@ QUALITY_WEIGHTS = {
 PIPELINE_STEPS = ["setup", "ingest", "compile", "lint", "strengthen", "file-back", "graph", "context"]
 GRAPHIFY_RAW_DIR = ("raw", "graphify_articles")
 TEXT_SOURCE_SUFFIXES = {".md", ".txt", ".csv", ".json", ".yaml", ".yml"}
-EXTRACTABLE_SUFFIXES = TEXT_SOURCE_SUFFIXES | {".pdf", ".html", ".htm"}
+OFFICE_SOURCE_SUFFIXES = {".docx", ".pptx", ".xlsx", ".xls", ".hwp", ".hwpx", ".hwpml"}
+EXTRACTABLE_SUFFIXES = TEXT_SOURCE_SUFFIXES | {".pdf", ".html", ".htm"} | OFFICE_SOURCE_SUFFIXES
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 VECTOR_DIMS = 256
+IMAGE_CONTEXT_WORDS = {"chart", "graph", "plot", "figure", "diagram", "architecture", "flow", "screenshot", "canvas", "svg"}
+IMAGE_SKIP_WORDS = {"ads", "doubleclick", "googlesyndication", "tracker", "pixel", "icon", "avatar", "logo", "social", "share", "nav", "menu", "header", "footer"}
 
 
 def slugify(text: str) -> str:
@@ -322,6 +325,104 @@ class SimpleHTMLTextExtractor(HTMLParser):
         raw = " ".join(self.parts)
         lines = [re.sub(r"\s+", " ", line).strip() for line in raw.splitlines()]
         return "\n".join(line for line in lines if line)
+
+
+class ImageCandidateExtractor(HTMLParser):
+    def __init__(self, base_url: str | None = None):
+        super().__init__()
+        self.base_url = base_url
+        self.candidates = []
+        self.figure_depth = 0
+        self.current_figure = None
+        self.caption_depth = 0
+        self.caption_parts = []
+
+    def handle_starttag(self, tag: str, attrs):
+        tag = tag.lower()
+        attrs_dict = {key.lower(): value for key, value in attrs if key and value is not None}
+        if tag == "figure":
+            self.figure_depth += 1
+            self.current_figure = {"context": "figure", "caption": ""}
+        if tag == "figcaption" and self.figure_depth:
+            self.caption_depth += 1
+            self.caption_parts = []
+        if tag in {"img", "source"}:
+            src = attrs_dict.get("src") or attrs_dict.get("data-src") or attrs_dict.get("srcset", "").split(" ")[0]
+            if src:
+                self._add_candidate(tag, src, attrs_dict)
+        if tag in {"canvas", "svg"}:
+            self._add_candidate(tag, attrs_dict.get("id") or attrs_dict.get("class") or tag, attrs_dict, virtual=True)
+
+    def handle_endtag(self, tag: str):
+        tag = tag.lower()
+        if tag == "figcaption" and self.caption_depth:
+            self.caption_depth -= 1
+            if self.current_figure is not None:
+                self.current_figure["caption"] = " ".join(self.caption_parts).strip()
+        if tag == "figure" and self.figure_depth:
+            self.figure_depth -= 1
+            self.current_figure = None
+
+    def handle_data(self, data: str):
+        if self.caption_depth:
+            cleaned = html.unescape(data).strip()
+            if cleaned:
+                self.caption_parts.append(cleaned)
+
+    def _add_candidate(self, tag: str, src: str, attrs: dict, virtual: bool = False) -> None:
+        context = " ".join(str(attrs.get(key, "")) for key in ("alt", "title", "class", "id", "role")).lower()
+        if any(word in context or word in src.lower() for word in IMAGE_SKIP_WORDS):
+            return
+        width = parse_int(attrs.get("width"))
+        height = parse_int(attrs.get("height"))
+        if width and height and width < 100 and height < 100:
+            return
+        reasons = []
+        score = 0
+        if self.figure_depth:
+            score += 3
+            reasons.append("figure")
+        if tag in {"canvas", "svg"}:
+            score += 4
+            reasons.append(tag)
+        for word in IMAGE_CONTEXT_WORDS:
+            if word in context or word in src.lower():
+                score += 2
+                reasons.append(word)
+        if width and height and (width >= 400 or height >= 300):
+            score += 2
+            reasons.append("large")
+        if attrs.get("alt"):
+            score += 1
+            reasons.append("alt")
+        caption = self.current_figure.get("caption", "") if self.current_figure else ""
+        candidate = {
+            "tag": tag,
+            "src": src if virtual else urllib.parse.urljoin(self.base_url or "", src),
+            "alt": attrs.get("alt", ""),
+            "title": attrs.get("title", ""),
+            "caption": caption,
+            "width": width,
+            "height": height,
+            "score": score,
+            "reasons": sorted(set(reasons)),
+        }
+        self.candidates.append(candidate)
+
+
+def parse_int(value) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_image_candidates(content: str, base_url: str | None = None, limit: int = 12) -> list[dict]:
+    parser = ImageCandidateExtractor(base_url=base_url)
+    parser.feed(content)
+    candidates = [item for item in parser.candidates if item["score"] > 0]
+    candidates.sort(key=lambda item: (-item["score"], item["src"]))
+    return candidates[:limit]
 
 
 def is_url(value: str) -> bool:
@@ -668,7 +769,66 @@ def video_frames_command(
     return report
 
 
-def extract_pdf_text(path: Path) -> str:
+def collect_markdown_outputs(root: Path) -> str:
+    parts = []
+    for file in sorted(root.rglob("*.md")):
+        text = file.read_text(encoding="utf-8", errors="ignore").strip()
+        if text:
+            parts.append(f"## {file.relative_to(root).as_posix()}\n\n{text}")
+    return "\n\n".join(parts)
+
+
+def run_pdf_external_tool(path: Path, tool: str) -> tuple[str, list[str]]:
+    warnings = []
+    with tempfile.TemporaryDirectory(prefix=f"ghpf-{tool}-") as temp_dir:
+        out_dir = Path(temp_dir) / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if tool == "opendataloader-pdf":
+            cmd = ["opendataloader-pdf", str(path), "-o", str(out_dir), "-f", "markdown"]
+        elif tool == "marker_single":
+            cmd = ["marker_single", str(path), "--output_format", "markdown", "--output_dir", str(out_dir)]
+        else:
+            raise ValueError(f"Unsupported PDF tool: {tool}")
+        completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=300)
+        if completed.returncode != 0:
+            raise RuntimeError(f"{tool} failed: {completed.stderr.strip()[:500]}")
+        if completed.stderr.strip():
+            warnings.append(f"{tool}: {completed.stderr.strip()[:300]}")
+        text = collect_markdown_outputs(out_dir)
+        if not text.strip():
+            raise RuntimeError(f"{tool} produced no Markdown output.")
+        return text, warnings
+
+
+def extract_pdf_with_pdfplumber(path: Path) -> tuple[str, list[str]]:
+    try:
+        import pdfplumber
+    except Exception as exc:
+        raise RuntimeError("pdfplumber is not available.") from exc
+    parts = []
+    table_count = 0
+    with pdfplumber.open(str(path)) as pdf:
+        for page_index, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text() or ""
+            page_parts = [f"## Page {page_index}"]
+            if text.strip():
+                page_parts.append(text.strip())
+            for table_index, table in enumerate(page.extract_tables() or [], start=1):
+                if not table:
+                    continue
+                table_count += 1
+                rows = []
+                for row in table:
+                    cells = [re.sub(r"\s+", " ", str(cell or "")).strip() for cell in row]
+                    rows.append("| " + " | ".join(cells) + " |")
+                if rows:
+                    page_parts.append(f"### Table {table_index}\n\n" + "\n".join(rows))
+            parts.append("\n\n".join(page_parts))
+    warnings = [f"pdfplumber extracted {table_count} tables."] if table_count else []
+    return "\n\n".join(parts), warnings
+
+
+def extract_pdf_with_pypdf(path: Path) -> str:
     try:
         from pypdf import PdfReader
     except Exception:
@@ -685,10 +845,167 @@ def extract_pdf_text(path: Path) -> str:
     return "\n\n".join(pages)
 
 
+def extract_pdf_text(path: Path) -> str:
+    return extract_pdf_with_pypdf(path)
+
+
+def extract_pdf_document(path: Path) -> tuple[str, list[str], str]:
+    attempts = []
+    for tool in ("opendataloader-pdf", "marker_single"):
+        if not command_available(tool):
+            attempts.append(f"{tool}: unavailable")
+            continue
+        try:
+            text, warnings = run_pdf_external_tool(path, tool)
+            return text, warnings + attempts, tool
+        except Exception as exc:
+            attempts.append(f"{tool}: {exc}")
+    if python_module_available("pdfplumber"):
+        try:
+            text, warnings = extract_pdf_with_pdfplumber(path)
+            return text, warnings + attempts, "pdfplumber"
+        except Exception as exc:
+            attempts.append(f"pdfplumber: {exc}")
+    text = extract_pdf_with_pypdf(path)
+    return text, attempts, "pypdf"
+
+
+def extract_docx_text(path: Path) -> str:
+    from docx import Document
+    document = Document(str(path))
+    parts = []
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        if text:
+            parts.append(text)
+    for table_index, table in enumerate(document.tables, start=1):
+        rows = []
+        for row in table.rows:
+            cells = [cell.text.replace("\n", " ").strip() for cell in row.cells]
+            rows.append("| " + " | ".join(cells) + " |")
+        if rows:
+            parts.append(f"## Table {table_index}\n\n" + "\n".join(rows))
+    return "\n\n".join(parts)
+
+
+def extract_pptx_text(path: Path) -> str:
+    from pptx import Presentation
+    prs = Presentation(str(path))
+    parts = []
+    for slide_index, slide in enumerate(prs.slides, start=1):
+        slide_parts = []
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                slide_parts.append(shape.text.strip())
+            if getattr(shape, "has_table", False):
+                rows = []
+                for row in shape.table.rows:
+                    cells = [cell.text_frame.text.replace("\n", " ").strip() for cell in row.cells]
+                    rows.append("| " + " | ".join(cells) + " |")
+                slide_parts.append("\n".join(rows))
+        if slide_parts:
+            parts.append(f"## Slide {slide_index}\n\n" + "\n\n".join(slide_parts))
+    return "\n\n".join(parts)
+
+
+def extract_xlsx_text(path: Path) -> str:
+    try:
+        import openpyxl
+    except Exception as exc:
+        raise RuntimeError("XLSX extraction requires openpyxl.") from exc
+    workbook = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
+    parts = []
+    for sheet in workbook.worksheets:
+        rows = []
+        for row in sheet.iter_rows(max_row=80, values_only=True):
+            values = ["" if value is None else str(value) for value in row]
+            if any(value.strip() for value in values):
+                rows.append("| " + " | ".join(values) + " |")
+        if rows:
+            parts.append(f"## Sheet: {sheet.title}\n\n" + "\n".join(rows))
+    return "\n\n".join(parts)
+
+
+def convert_document_with_kordoc(path: Path) -> tuple[str, list[str]]:
+    if not command_available("npx"):
+        raise RuntimeError("kordoc conversion requires npx.")
+    with tempfile.TemporaryDirectory(prefix="ghpf-kordoc-") as temp_dir:
+        out = Path(temp_dir) / "output.md"
+        cmd = ["npx", "-y", "kordoc", str(path), "-o", str(out), "--silent"]
+        completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=240)
+        if completed.returncode != 0:
+            raise RuntimeError(f"kordoc failed: {completed.stderr.strip()[:500]}")
+        if not out.exists() or not out.read_text(encoding="utf-8", errors="ignore").strip():
+            raise RuntimeError("kordoc produced no Markdown output.")
+        warnings = [completed.stderr.strip()[:300]] if completed.stderr.strip() else []
+        return out.read_text(encoding="utf-8", errors="ignore"), warnings
+
+
+def convert_hwp_with_hwpjs(path: Path) -> tuple[str, list[str]]:
+    with tempfile.TemporaryDirectory(prefix="ghpf-hwpjs-") as temp_dir:
+        out = Path(temp_dir) / "output.md"
+        if command_available("hwpjs"):
+            cmd = ["hwpjs", "to-markdown", str(path), "-o", str(out), "--images-dir", str(Path(temp_dir) / "images")]
+        elif command_available("npx"):
+            cmd = ["npx", "-y", "@ohah/hwpjs", "to-markdown", str(path), "-o", str(out), "--images-dir", str(Path(temp_dir) / "images")]
+        else:
+            raise RuntimeError("HWP conversion requires hwpjs or npx.")
+        completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=240)
+        if completed.returncode != 0:
+            raise RuntimeError(f"hwpjs failed: {completed.stderr.strip()[:500]}")
+        if not out.exists() or not out.read_text(encoding="utf-8", errors="ignore").strip():
+            raise RuntimeError("hwpjs produced no Markdown output.")
+        warnings = [completed.stderr.strip()[:300]] if completed.stderr.strip() else []
+        return out.read_text(encoding="utf-8", errors="ignore"), warnings
+
+
+def extract_office_document(path: Path) -> tuple[str, list[str], str]:
+    suffix = path.suffix.lower()
+    attempts = []
+    if suffix in {".hwp", ".hwpx", ".hwpml"}:
+        for name, func in (("kordoc", convert_document_with_kordoc), ("hwpjs", convert_hwp_with_hwpjs)):
+            try:
+                text, warnings = func(path)
+                return text, warnings + attempts, name
+            except Exception as exc:
+                attempts.append(f"{name}: {exc}")
+        raise RuntimeError("; ".join(attempts) or "No HWP converter available.")
+    if suffix == ".docx":
+        return extract_docx_text(path), attempts, "python-docx"
+    if suffix == ".pptx":
+        return extract_pptx_text(path), attempts, "python-pptx"
+    if suffix in {".xlsx", ".xls"}:
+        if suffix == ".xls":
+            try:
+                text, warnings = convert_document_with_kordoc(path)
+                return text, warnings + attempts, "kordoc"
+            except Exception as exc:
+                attempts.append(f"kordoc: {exc}")
+        return extract_xlsx_text(path), attempts, "openpyxl"
+    raise RuntimeError(f"Unsupported office suffix: {suffix}")
+
+
 def extract_html_text(content: str) -> tuple[str, str]:
     parser = SimpleHTMLTextExtractor()
     parser.feed(content)
     return parser.title, parser.text
+
+
+def extract_html_document(content: str, base_url: str | None = None) -> tuple[str, str, list[str]]:
+    title, text = extract_html_text(content)
+    candidates = extract_image_candidates(content, base_url=base_url)
+    warnings = []
+    parts = [text]
+    if candidates:
+        parts.extend(["", "## Image Candidates", ""])
+        for index, item in enumerate(candidates, start=1):
+            label = item.get("alt") or item.get("caption") or item.get("title") or item.get("tag")
+            parts.append(
+                f"- {index}. {label}: `{item['src']}` score={item['score']} reasons={', '.join(item['reasons']) or 'n/a'}"
+            )
+    else:
+        warnings.append("No content-bearing image candidates detected.")
+    return title, "\n".join(part for part in parts if part is not None), warnings
 
 
 def decode_response_body(body: bytes, content_type: str) -> str:
@@ -701,6 +1018,59 @@ def fetch_url(url: str, max_bytes: int = 10_000_000) -> tuple[bytes, str]:
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 GHFP-LLM-Wiki/1.0"})
     with urllib.request.urlopen(request, timeout=30) as response:
         return response.read(max_bytes), response.headers.get("content-type", "")
+
+
+def fetch_url_with_playwright(url: str) -> tuple[str, list[str]]:
+    if not python_module_available("playwright"):
+        raise RuntimeError("Python playwright is not available.")
+    script = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+url = sys.argv[1]
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    page = browser.new_page()
+    page.goto(url, wait_until="networkidle", timeout=30000)
+    result = {"title": page.title(), "html": page.content()}
+    browser.close()
+print(json.dumps(result, ensure_ascii=False))
+"""
+    result = subprocess.run(["python3", "-c", script, url], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"playwright fallback failed: {result.stderr.strip()[:300]}")
+    data = json.loads(result.stdout)
+    return data.get("html", ""), [f"playwright_title: {data.get('title', '')}"]
+
+
+def fetch_url_with_deepcloak(url: str) -> tuple[str, list[str]]:
+    if not command_available("deepcloak"):
+        raise RuntimeError("deepcloak is not available.")
+    with tempfile.TemporaryDirectory(prefix="ghpf-deepcloak-") as temp_dir:
+        out = Path(temp_dir) / "report.md"
+        query = f"Extract the main readable content from this page with citations: {url}"
+        cmd = ["deepcloak", query, "--depth", "quick", "--out", str(out)]
+        result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=180)
+        if result.returncode != 0:
+            raise RuntimeError(f"deepcloak fallback failed: {result.stderr.strip()[:300]}")
+        if not out.exists():
+            raise RuntimeError("deepcloak did not produce a report.")
+        return out.read_text(encoding="utf-8", errors="ignore"), ["deepcloak fallback report"]
+
+
+def fetch_web_content(url: str) -> tuple[bytes, str, list[str]]:
+    warnings = []
+    try:
+        body, content_type = fetch_url(url)
+        return body, content_type, warnings
+    except Exception as exc:
+        warnings.append(f"urllib fetch failed: {exc}")
+    for name, func in (("playwright", fetch_url_with_playwright), ("deepcloak", fetch_url_with_deepcloak)):
+        try:
+            text, fallback_warnings = func(url)
+            return text.encode("utf-8"), "text/html; charset=utf-8", warnings + [f"{name} fallback used"] + fallback_warnings
+        except Exception as exc:
+            warnings.append(f"{name} fallback failed: {exc}")
+    raise RuntimeError("; ".join(warnings))
 
 
 def save_downloaded_pdf(vault: Path, url: str, body: bytes) -> Path:
@@ -739,16 +1109,129 @@ def yt_dlp_command() -> list[str] | None:
     return None
 
 
+def seconds_to_timestamp(value: float) -> str:
+    seconds = int(value or 0)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def youtube_metadata(url: str) -> tuple[dict, list[str]]:
+    dlp = yt_dlp_command()
+    if not dlp:
+        return {}, ["yt-dlp unavailable for metadata."]
+    cmd = [*dlp, "--dump-json", "--skip-download", url]
+    completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=90)
+    if completed.returncode != 0:
+        return {}, [f"yt-dlp metadata failed: {completed.stderr.strip()[:300]}"]
+    try:
+        data = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        return {}, [f"yt-dlp metadata JSON decode failed: {exc}"]
+    keys = ["id", "title", "channel", "uploader", "upload_date", "duration", "view_count", "like_count", "webpage_url", "description"]
+    metadata = {key: data.get(key) for key in keys if data.get(key) not in (None, "")}
+    metadata["chapters"] = [
+        {"start_time": chapter.get("start_time"), "title": chapter.get("title", "")}
+        for chapter in data.get("chapters", [])[:50]
+        if chapter.get("title")
+    ]
+    return metadata, []
+
+
+def format_youtube_document(title: str, snippets: list[dict], metadata: dict | None = None) -> str:
+    lines = [f"# {title}", ""]
+    metadata = metadata or {}
+    if metadata:
+        lines.extend(["## Metadata", ""])
+        for key, value in metadata.items():
+            if key == "chapters":
+                continue
+            rendered = str(value).replace("\n", " ")[:1000]
+            lines.append(f"- {key}: {rendered}")
+        if metadata.get("chapters"):
+            lines.extend(["", "## Chapters", ""])
+            for chapter in metadata["chapters"]:
+                lines.append(f"- [{seconds_to_timestamp(chapter.get('start_time') or 0)}] {chapter.get('title', '')}")
+        lines.append("")
+    lines.extend(["## Transcript", ""])
+    for item in snippets:
+        text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+        if not text:
+            continue
+        lines.append(f"- [{seconds_to_timestamp(float(item.get('start', 0) or 0))}] {text}")
+    return "\n".join(lines)
+
+
+def transcript_from_youtube_api(video_id: str) -> tuple[list[dict], str]:
+    from youtube_transcript_api import YouTubeTranscriptApi
+
+    api = YouTubeTranscriptApi()
+    for languages in (["ko", "en"], ["ko"], ["en"]):
+        try:
+            transcript = api.fetch(video_id, languages=languages)
+            snippets = [{"text": item.text, "start": item.start, "duration": item.duration} for item in transcript]
+            return snippets, f"youtube_transcript_api.fetch:{','.join(languages)}"
+        except Exception:
+            continue
+    try:
+        raw = YouTubeTranscriptApi.get_transcript(video_id, languages=["ko", "en"])
+        snippets = [{"text": item.get("text", ""), "start": item.get("start", 0), "duration": item.get("duration", 0)} for item in raw]
+        return snippets, "youtube_transcript_api.get_transcript"
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def transcript_from_ytdlp(url: str, temp_dir: Path) -> tuple[list[dict], str]:
+    dlp = yt_dlp_command()
+    if not dlp:
+        raise RuntimeError("yt-dlp unavailable.")
+    output_template = str(temp_dir / "%(id)s.%(ext)s")
+    cmd = [
+        *dlp,
+        "--skip-download",
+        "--write-subs",
+        "--write-auto-subs",
+        "--sub-langs",
+        "ko.*,en.*,ko,en",
+        "--sub-format",
+        "json3/vtt",
+        "-o",
+        output_template,
+        url,
+    ]
+    result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"yt-dlp failed: {result.stderr.strip()[:500]}")
+    json_files = sorted(temp_dir.glob("*.json3"))
+    if json_files:
+        data = json.loads(json_files[0].read_text(encoding="utf-8", errors="ignore"))
+        snippets = []
+        for event in data.get("events", []):
+            text = "".join(seg.get("utf8", "") for seg in event.get("segs", [])).strip()
+            if text:
+                snippets.append({"text": text, "start": (event.get("tStartMs") or 0) / 1000, "duration": (event.get("dDurationMs") or 0) / 1000})
+        if snippets:
+            return snippets, "yt-dlp:json3"
+    vtt_files = sorted(temp_dir.glob("*.vtt"))
+    if vtt_files:
+        text = "\n".join(clean_vtt_text(path.read_text(encoding="utf-8", errors="ignore")) for path in vtt_files)
+        snippets = [{"text": line, "start": 0, "duration": 0} for line in text.splitlines() if line.strip()]
+        if snippets:
+            return snippets, "yt-dlp:vtt"
+    raise RuntimeError("yt-dlp did not produce usable subtitle files.")
+
+
 def extract_youtube_transcript(url: str) -> tuple[str, str, list[str]]:
     video_id = youtube_video_id(url)
     warnings = []
+    metadata, metadata_warnings = youtube_metadata(url)
+    warnings.extend(metadata_warnings)
+    title = metadata.get("title") or f"YouTube {video_id or 'video'}"
     if video_id:
         try:
-            from youtube_transcript_api import YouTubeTranscriptApi
-
-            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=["ko", "en"])
-            text = "\n".join(item.get("text", "") for item in transcript)
-            return f"YouTube {video_id}", text, warnings
+            snippets, method = transcript_from_youtube_api(video_id)
+            warnings.append(f"transcript_method: {method}")
+            return title, format_youtube_document(title, snippets, metadata), warnings
         except Exception as exc:
             warnings.append(f"youtube_transcript_api unavailable or failed: {exc}")
 
@@ -757,31 +1240,9 @@ def extract_youtube_transcript(url: str) -> tuple[str, str, list[str]]:
         raise RuntimeError("YouTube extraction requires youtube_transcript_api, yt-dlp, or uvx.")
 
     with tempfile.TemporaryDirectory(prefix="ghpf-youtube-") as temp_dir:
-        output_template = str(Path(temp_dir) / "%(id)s.%(ext)s")
-        cmd = [
-            *dlp,
-            "--skip-download",
-            "--write-subs",
-            "--write-auto-subs",
-            "--sub-langs",
-            "ko.*,en.*,ko,en",
-            "--sub-format",
-            "vtt",
-            "--print",
-            "title",
-            "-o",
-            output_template,
-            url,
-        ]
-        result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90, check=False)
-        title = result.stdout.strip().splitlines()[0] if result.stdout.strip() else f"YouTube {video_id or 'video'}"
-        if result.returncode != 0:
-            raise RuntimeError(f"yt-dlp failed: {result.stderr.strip()[:500]}")
-        vtt_files = sorted(Path(temp_dir).glob("*.vtt"))
-        if not vtt_files:
-            raise RuntimeError("yt-dlp did not produce subtitle VTT files.")
-        text = "\n".join(clean_vtt_text(path.read_text(encoding="utf-8", errors="ignore")) for path in vtt_files)
-        return title, text, warnings
+        snippets, method = transcript_from_ytdlp(url, Path(temp_dir))
+        warnings.append(f"transcript_method: {method}")
+        return title, format_youtube_document(title, snippets, metadata), warnings
 
 
 def extract_source_to_markdown(vault: Path, source_value: str | Path) -> dict:
@@ -792,28 +1253,32 @@ def extract_source_to_markdown(vault: Path, source_value: str | Path) -> dict:
         path = write_extracted_markdown(vault, value, "youtube-transcript", title, text, warnings=warnings)
         return {"source": value, "path": path, "kind": "youtube-transcript", "extracted": True, "warnings": warnings}
     if is_url(value):
-        body, content_type = fetch_url(value)
+        body, content_type, fetch_warnings = fetch_web_content(value)
         if "application/pdf" in content_type.lower() or urllib.parse.urlparse(value).path.lower().endswith(".pdf"):
             pdf_path = save_downloaded_pdf(vault, value, body)
-            text = extract_pdf_text(pdf_path)
-            path = write_extracted_markdown(vault, value, "url-pdf", page_title_from_path(pdf_path), text)
-            return {"source": value, "path": path, "kind": "url-pdf", "extracted": True, "download": pdf_path}
-        title, text = extract_html_text(decode_response_body(body, content_type))
-        path = write_extracted_markdown(vault, value, "web-page", title or urllib.parse.urlparse(value).netloc, text)
-        return {"source": value, "path": path, "kind": "web-page", "extracted": True}
+            text, warnings, method = extract_pdf_document(pdf_path)
+            path = write_extracted_markdown(vault, value, f"url-pdf:{method}", page_title_from_path(pdf_path), text, warnings=fetch_warnings + warnings)
+            return {"source": value, "path": path, "kind": "url-pdf", "parser": method, "extracted": True, "download": pdf_path, "warnings": fetch_warnings + warnings}
+        title, text, warnings = extract_html_document(decode_response_body(body, content_type), base_url=value)
+        path = write_extracted_markdown(vault, value, "web-page", title or urllib.parse.urlparse(value).netloc, text, warnings=fetch_warnings + warnings)
+        return {"source": value, "path": path, "kind": "web-page", "extracted": True, "warnings": fetch_warnings + warnings}
 
     path = Path(value).expanduser()
     if not path.exists() or not path.is_file():
         return {"source": value, "error": "missing_or_not_file"}
     suffix = path.suffix.lower()
     if suffix == ".pdf":
-        text = extract_pdf_text(path)
-        out = write_extracted_markdown(vault, str(path), "pdf", page_title_from_path(path), text)
-        return {"source": value, "path": out, "kind": "pdf", "extracted": True, "original_path": path}
+        text, warnings, method = extract_pdf_document(path)
+        out = write_extracted_markdown(vault, str(path), f"pdf:{method}", page_title_from_path(path), text, warnings=warnings)
+        return {"source": value, "path": out, "kind": "pdf", "parser": method, "extracted": True, "original_path": path, "warnings": warnings}
     if suffix in {".html", ".htm"}:
-        title, text = extract_html_text(path.read_text(encoding="utf-8", errors="ignore"))
-        out = write_extracted_markdown(vault, str(path), "html-file", title or page_title_from_path(path), text)
-        return {"source": value, "path": out, "kind": "html-file", "extracted": True, "original_path": path}
+        title, text, warnings = extract_html_document(path.read_text(encoding="utf-8", errors="ignore"), base_url=path.resolve().as_uri())
+        out = write_extracted_markdown(vault, str(path), "html-file", title or page_title_from_path(path), text, warnings=warnings)
+        return {"source": value, "path": out, "kind": "html-file", "extracted": True, "original_path": path, "warnings": warnings}
+    if suffix in OFFICE_SOURCE_SUFFIXES:
+        text, warnings, method = extract_office_document(path)
+        out = write_extracted_markdown(vault, str(path), f"office:{method}", page_title_from_path(path), text, warnings=warnings)
+        return {"source": value, "path": out, "kind": "office", "parser": method, "extracted": True, "original_path": path, "warnings": warnings}
     return {"source": value, "path": path, "kind": "file", "extracted": False, "original_path": path}
 
 
@@ -1393,9 +1858,9 @@ def python_module_available(module: str) -> bool:
 
 
 def capabilities(vault: Path | None = None) -> dict:
-    modules = ["pypdf", "PyPDF2", "docx", "pptx", "openpyxl", "networkx", "youtube_transcript_api", "pytesseract", "playwright", "matplotlib", "numpy", "PIL"]
+    modules = ["pypdf", "PyPDF2", "pdfplumber", "docx", "pptx", "openpyxl", "networkx", "youtube_transcript_api", "pytesseract", "playwright", "matplotlib", "numpy", "PIL"]
     caps = {
-        "commands": {name: command_available(name) for name in ["git", "node", "npx", "uv", "uvx", "graphify", "playwright", "yt-dlp", "ffmpeg", "ffprobe", "tesseract", "obsidian"]},
+        "commands": {name: command_available(name) for name in ["git", "node", "npx", "uv", "uvx", "graphify", "playwright", "yt-dlp", "ffmpeg", "ffprobe", "tesseract", "obsidian", "opendataloader-pdf", "marker_single", "hwpjs", "deepcloak"]},
         "python_modules": {name: python_module_available(name) for name in modules},
         "optional_modes": {
             "basic_wikilink_search": True,
@@ -1404,8 +1869,12 @@ def capabilities(vault: Path | None = None) -> dict:
             "graphify_cli_ready": command_available("graphify") or command_available("uv"),
             "youtube_ingest_ready": command_available("yt-dlp") or command_available("uvx") or python_module_available("youtube_transcript_api"),
             "ocr_ready": command_available("tesseract") or python_module_available("pytesseract"),
-            "office_extract_ready": python_module_available("docx") or python_module_available("pptx") or python_module_available("openpyxl"),
-            "playwright_ready": command_available("playwright") or python_module_available("playwright") or command_available("npx"),
+            "advanced_pdf_extract_ready": command_available("opendataloader-pdf") or command_available("marker_single") or python_module_available("pdfplumber"),
+            "hwp_extract_ready": command_available("hwpjs") or command_available("npx"),
+            "office_extract_ready": python_module_available("docx") or python_module_available("pptx") or python_module_available("openpyxl") or command_available("npx"),
+            "playwright_ready": command_available("playwright") or python_module_available("playwright"),
+            "deepcloak_ready": command_available("deepcloak"),
+            "web_fallback_ready": python_module_available("playwright") or command_available("deepcloak"),
             "figure_export_ready": python_module_available("matplotlib") and python_module_available("numpy"),
             "image_frame_analysis_ready": python_module_available("PIL"),
             "video_frame_extract_ready": command_available("ffmpeg"),

@@ -67,10 +67,12 @@ Ingest source files into the compiled wiki:
 python3 scripts/ghpf_wiki.py ingest --vault ./my-vault ./paper-notes.md
 ```
 
-Extract PDF, web page, local HTML, or YouTube transcript sources into Markdown, then ingest them:
+Extract PDF, web page, local HTML, Office/HWP documents, or YouTube transcript sources into Markdown, then ingest them:
 
 ```bash
 python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest ./paper.pdf
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest ./report.docx
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest ./korean-document.hwp
 python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest https://example.com/article
 python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest https://www.youtube.com/watch?v=<id>
 ```
@@ -194,7 +196,15 @@ For figure work, use `figure-card` to capture reusable figure patterns, `figure-
 
 For video/image visual evidence, `video-frames` stores sampled frames in `raw/figures/video-frames/`, writes a frame-analysis Markdown source, can ingest it into `wiki/sources/`, and can create a figure card for later `figure-insight` work.
 
-PDF extraction uses `pypdf` or `PyPDF2`. Web extraction uses Python's standard library. YouTube transcript extraction uses `youtube_transcript_api`, `yt-dlp`, or `uvx yt-dlp` when available. YouTube/local-video frame extraction requires `ffmpeg`; YouTube frame download also requires `yt-dlp` or `uvx yt-dlp`. Local image analysis uses Pillow when available. OCR, office parsing, and browser automation remain optional capabilities. `capabilities` reports what is available on the current machine so another user can clone the repo and let the workflow adapt to their environment.
+Document parsing is tiered and optional-tool aware:
+
+- PDF: `opendataloader-pdf` -> `marker_single` -> `pdfplumber` -> `pypdf`/`PyPDF2`
+- HWP/HWPX/HWPML: `kordoc` via `npx` -> `hwpjs`
+- DOCX/PPTX/XLSX: `python-docx`, `python-pptx`, `openpyxl` when available
+- Web/HTML: standard-library extraction plus image/figure candidate detection; optional Playwright/DeepCloak fallback when installed
+- YouTube: `youtube_transcript_api` latest `.fetch()` path -> legacy API -> `yt-dlp`/`uvx yt-dlp`, with timestamps and metadata when available
+
+YouTube/local-video frame extraction requires `ffmpeg`; YouTube frame download also requires `yt-dlp` or `uvx yt-dlp`. Local image analysis uses Pillow when available. OCR, office parsing, and browser automation remain optional capabilities. `capabilities` reports what is available on the current machine so another user can clone the repo and let the workflow adapt to their environment.
 
 ## Cache Policy
 
