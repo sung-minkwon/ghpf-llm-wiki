@@ -28,6 +28,14 @@ Before assuming optional extractors exist, check the local environment:
 python3 scripts/ghpf_wiki.py capabilities --vault <path>
 ```
 
+For a fresh clone, prefer the one-command install:
+
+```bash
+./install.sh
+```
+
+This creates `./my-vault`, installs project skills for Codex/Claude Code/Antigravity, checks capabilities, runs lint, and writes `my-vault/swarmvault/exports/install-report.json`.
+
 Run:
 
 ```bash

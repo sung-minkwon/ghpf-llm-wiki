@@ -13,6 +13,7 @@ Use the same rules as `AGENTS.md`:
 Useful commands:
 
 ```bash
+./install.sh
 python3 scripts/setup_vault.py --vault <path> --profile auto
 python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube>
 python3 scripts/ghpf_wiki.py video-frames --vault <path> --source <youtube-or-video-or-image> --ingest --figure-card

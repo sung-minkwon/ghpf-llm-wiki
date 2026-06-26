@@ -4,6 +4,7 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 
 ## Operating Rules
 
+- For a fresh clone, run `./install.sh` first. It creates `./my-vault`, installs project skills for Codex/Claude Code/Antigravity, checks capabilities, runs lint, and writes an install report.
 - Treat `wiki/` as the canonical, human-readable Markdown wiki.
 - Treat `graph_imports/` as non-canonical Graphify reference material. Promote durable findings into `wiki/` before relying on them as maintained knowledge.
 - Treat `wiki/cards/` as the reusable structure for paper, experiment, and strategy insight work.
@@ -15,7 +16,7 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 - Keep wiki operating rules in `schema/AGENTS.md`.
 - Put graph, retrieval, context-pack, cache, export, and task-ledger artifacts under `swarmvault/`.
 - Do not rewrite user notes broadly. Merge focused changes and preserve provenance.
-- For setup, run `python3 scripts/setup_vault.py --vault <path> --profile auto`.
+- For setup, run `./install.sh` for the default install or `python3 scripts/setup_vault.py --vault <path> --profile auto` for manual setup.
 - For extract/video-frames/ingest/card/index/search/insight/evaluate/figure-card/figure-insight/figure-export/lint/quality/diff/state/link-audit/link-strengthen/graphify-import/cache-clean/file-back/graph/context/task sidecar work, run `python3 scripts/ghpf_wiki.py --help`.
 - Treat YouTube transcript, OCR, office document, and browser automation support as optional environment capabilities. Check `python3 scripts/ghpf_wiki.py capabilities --vault <path>` before assuming they are installed.
 

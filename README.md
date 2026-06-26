@@ -15,9 +15,24 @@ The default pattern is:
 ```bash
 git clone https://github.com/sung-minkwon/ghpf-llm-wiki.git
 cd ghpf-llm-wiki
+./install.sh
+```
 
+`./install.sh` runs the default post-clone flow: create `./my-vault`, install Codex/Claude Code/Antigravity project skills, print capabilities, run lint, and write `my-vault/swarmvault/exports/install-report.json`.
+
+Manual equivalent:
+
+```bash
+python3 scripts/bootstrap_install.py --vault ./my-vault --profile auto --agents codex,claude,antigravity
+```
+
+Manual step-by-step install:
+
+```bash
 python3 scripts/setup_vault.py --vault ./my-vault --profile auto
 python3 scripts/install_agents.py --scope project --agents codex,claude,antigravity
+python3 scripts/ghpf_wiki.py capabilities --vault ./my-vault
+python3 scripts/ghpf_wiki.py lint --vault ./my-vault
 ```
 
 Then open `my-vault/` as an Obsidian vault and ask your agent to use the GHFP wiki workflow.

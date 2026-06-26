@@ -1,5 +1,13 @@
 # GHFP LLM Wiki Workflows
 
+## /ghpf-install
+
+Run the default post-clone install:
+
+```bash
+./install.sh
+```
+
 ## /ghpf-setup
 
 Initialize or repair a vault:
