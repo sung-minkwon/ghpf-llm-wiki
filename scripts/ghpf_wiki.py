@@ -30,6 +30,13 @@ QUALITY_WEIGHTS = {
 }
 PIPELINE_STEPS = ["setup", "ingest", "compile", "lint", "strengthen", "file-back", "graph", "context"]
 GRAPHIFY_RAW_DIR = ("raw", "graphify_articles")
+INTERNAL_RAW_PREFIXES = {
+    ("raw", "originals"),
+    ("raw", "sources"),
+    ("raw", "sources", "extracted"),
+    ("raw", "sources", "downloads"),
+    ("raw", "figures", "video-frames"),
+}
 TEXT_SOURCE_SUFFIXES = {".md", ".txt", ".csv", ".json", ".yaml", ".yml"}
 OFFICE_SOURCE_SUFFIXES = {".docx", ".pptx", ".xlsx", ".xls", ".hwp", ".hwpx", ".hwpml"}
 EXTRACTABLE_SUFFIXES = TEXT_SOURCE_SUFFIXES | {".pdf", ".html", ".htm"} | OFFICE_SOURCE_SUFFIXES
@@ -180,6 +187,8 @@ def source_candidates(vault: Path) -> list[Path]:
         for path in root.rglob("*"):
             rel_parts = path.relative_to(vault).parts
             if rel_parts[:2] == GRAPHIFY_RAW_DIR:
+                continue
+            if any(rel_parts[: len(prefix)] == prefix for prefix in INTERNAL_RAW_PREFIXES):
                 continue
             if path.is_file() and path.suffix.lower() in EXTRACTABLE_SUFFIXES:
                 candidates.append(path)
@@ -1615,6 +1624,17 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
         original = prepared.get("original") or {}
         if linked_evidence and linked_evidence[0].get("original"):
             original = linked_evidence[0]["original"]
+        if not linked_evidence and text.strip():
+            linked_evidence = index_extracted_evidence(
+                vault,
+                str(prepared.get("source") or source_value),
+                raw_path,
+                str(prepared.get("kind") or "file"),
+                title,
+                text,
+                parser=prepared.get("parser"),
+                original=original or None,
+            )
         evidence_record_count = prepared.get("evidence_records") or len(linked_evidence)
         original_ref = original.get("path") or original.get("source_url") or original.get("source") or ""
         evidence_index_rel = evidence_index_path(vault).relative_to(vault).as_posix() if evidence_record_count else ""

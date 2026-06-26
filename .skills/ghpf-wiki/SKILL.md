@@ -11,6 +11,8 @@ Use this skill to create and operate a portable LLM Wiki.
 
 - Use `wiki/` as the canonical human-readable Markdown wiki.
 - Use `raw/` as the immutable source intake folder.
+- Use `raw/originals/` as the preserved original/downloaded asset archive.
+- Use `evidence/index.jsonl` as the machine-readable source-location index for OpenCrab promotion.
 - Use `raw/graphify_articles/` for bulk Graphify intake; normal `ingest` skips this folder.
 - Support `_raw/` as a compatibility intake folder for Obsidian capture tools.
 - Use `graph_imports/` as a non-canonical Graphify reference layer.

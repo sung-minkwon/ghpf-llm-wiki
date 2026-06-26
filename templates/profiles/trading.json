@@ -3,9 +3,11 @@
   "description": "Trading strategy, market-data, and backtest wiki.",
   "folders": [
     "_raw",
+    "raw/originals",
     "raw/figures",
     "raw/figures/video-frames",
     "raw/graphify_articles",
+    "evidence",
     "graph_imports",
     "wiki/sources",
     "wiki/trading/strategies",

@@ -9,6 +9,7 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 - Treat `graph_imports/` as non-canonical Graphify reference material. Promote durable findings into `wiki/` before relying on them as maintained knowledge.
 - Treat `wiki/cards/` as the reusable structure for paper, experiment, and strategy insight work.
 - Treat `wiki/cards/figures/` and `wiki/figure-designs/` as the reusable structure for manuscript, experiment, and trading chart figure design.
+- Treat `raw/originals/` as preserved original source artifacts and `evidence/index.jsonl` as the machine-readable evidence locator index.
 - Treat `raw/figures/video-frames/` as preserved visual evidence sampled from YouTube, local videos, and image files.
 - Use `[[wikilinks]]` for durable cross-references.
 - Put immutable source copies in `raw/`; `_raw/` is supported for Obsidian capture compatibility.

@@ -18,6 +18,7 @@ Indexed evidence kinds include:
 - Web/HTML image candidates
 - Video/image frame files
 - Office/Markdown sections when finer source locations are unavailable
+- Plain Markdown/TXT-style source files as document-level evidence during `ingest`
 
 ## Observed Verification
 

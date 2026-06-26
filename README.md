@@ -175,7 +175,7 @@ python3 scripts/ghpf_wiki.py task finish --vault ./my-vault --title "Test BTC st
 
 ## Design Rule
 
-Keep `wiki/` as the human-readable canonical knowledge base. Use `graph_imports/` only as an imported Graphify reference layer. Let sidecar tools write only to `swarmvault/`, `graph_imports/`, `wiki/tasks/`, and explicit exports unless a human asks for canonical wiki edits.
+Keep `wiki/` as the human-readable canonical knowledge base. Use `raw/originals/` for preserved source artifacts, `evidence/index.jsonl` for machine-readable evidence locators, and `graph_imports/` only as an imported Graphify reference layer. Let sidecar tools write only to `raw/originals/`, `evidence/`, `swarmvault/`, `graph_imports/`, `wiki/tasks/`, and explicit exports unless a human asks for canonical wiki edits.
 
 ## Quality Loop
 
@@ -215,7 +215,7 @@ YouTube/local-video frame extraction requires `ffmpeg`; YouTube frame download a
 
 ## Cache Policy
 
-- Preserve `raw/` and `wiki/`.
+- Preserve `raw/`, `evidence/`, and `wiki/`.
 - Treat `swarmvault/cache/` as disposable.
 - Keep Graphify reference imports under `graph_imports/` separate from canonical notes.
 - Use `cache-clean` to delete old cache runs; use `--dry-run` before destructive cleanup.
