@@ -1,0 +1,28 @@
+{
+  "name": "mixed",
+  "description": "Combined research, trading strategy, and codebase wiki.",
+  "folders": [
+    "_raw",
+    "wiki/sources",
+    "wiki/papers",
+    "wiki/methods",
+    "wiki/citations",
+    "wiki/trading/strategies",
+    "wiki/trading/backtests",
+    "wiki/trading/market-data",
+    "wiki/trading/risk-rules",
+    "wiki/codebase/architecture",
+    "wiki/codebase/modules",
+    "wiki/codebase/experiments",
+    "wiki/concepts",
+    "wiki/entities",
+    "wiki/syntheses",
+    "wiki/open-questions",
+    "wiki/tasks",
+    "swarmvault/state",
+    "swarmvault/context-packs",
+    "swarmvault/task-ledger",
+    "swarmvault/exports"
+  ]
+}
+

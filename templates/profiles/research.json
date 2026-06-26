@@ -1,0 +1,21 @@
+{
+  "name": "research",
+  "description": "Research paper and academic project wiki.",
+  "folders": [
+    "_raw",
+    "wiki/sources",
+    "wiki/papers",
+    "wiki/methods",
+    "wiki/citations",
+    "wiki/concepts",
+    "wiki/entities",
+    "wiki/syntheses",
+    "wiki/open-questions",
+    "wiki/tasks",
+    "swarmvault/state",
+    "swarmvault/context-packs",
+    "swarmvault/task-ledger",
+    "swarmvault/exports"
+  ]
+}
+

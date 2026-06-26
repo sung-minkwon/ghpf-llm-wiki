@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+.env
+ghpf.config.local.json
+*.sqlite
+*.sqlite-*
+.obsidian/workspace*
+.obsidian/cache/
+swarmvault/state/retrieval/
+swarmvault/state/embeddings/
+

@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "name": "research",
+      "match": ["paper", "doi", "abstract", "methodology", "citation", "thesis", "논문", "초록"],
+      "create": ["wiki/papers", "wiki/methods", "wiki/citations", "wiki/open-questions"]
+    },
+    {
+      "name": "trading",
+      "match": ["bitcoin", "btc", "trading", "strategy", "backtest", "ohlcv", "risk", "kronos", "jutopia", "비트코인", "자동매매", "전략"],
+      "create": ["wiki/trading/strategies", "wiki/trading/backtests", "wiki/trading/market-data", "wiki/trading/risk-rules"]
+    },
+    {
+      "name": "codebase",
+      "match": ["src", "tests", "architecture", "api", "module", "class", "function"],
+      "create": ["wiki/codebase/architecture", "wiki/codebase/modules", "wiki/codebase/experiments"]
+    }
+  ]
+}
+
