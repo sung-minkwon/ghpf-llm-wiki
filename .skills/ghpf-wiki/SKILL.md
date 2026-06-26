@@ -51,6 +51,12 @@ Use the helper for deterministic intake:
 python3 scripts/ghpf_wiki.py ingest --vault <path> [source files...]
 ```
 
+For PDF, web page, local HTML, or YouTube transcript sources, extract and ingest in one step:
+
+```bash
+python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube>
+```
+
 For each source in `raw/` or `_raw/`:
 
 1. Create a source note under `wiki/sources/`.
@@ -159,10 +165,11 @@ Answer from the wiki first:
 Before using the wiki as high-value context, prefer this loop:
 
 1. `capabilities` to know what this machine can extract.
-2. `ingest` to compile raw material into source notes.
-3. `quality` and `lint` to check metadata, coverage, broken links, and manifest drift.
-4. `link-audit` and `link-strengthen` to improve graph connectivity.
-5. `graphify-import` when a bulk Graphify map should become searchable reference context.
-6. `file-back` to save reusable answers.
-7. `graph` and `context` to export sidecar artifacts for agents.
-8. `cache-clean --dry-run` before deleting disposable cache.
+2. `extract --ingest` for PDF, web, local HTML, or YouTube transcript sources.
+3. `ingest` to compile raw material into source notes.
+4. `quality` and `lint` to check metadata, coverage, broken links, and manifest drift.
+5. `link-audit` and `link-strengthen` to improve graph connectivity.
+6. `graphify-import` when a bulk Graphify map should become searchable reference context.
+7. `file-back` to save reusable answers.
+8. `graph` and `context` to export sidecar artifacts for agents.
+9. `cache-clean --dry-run` before deleting disposable cache.

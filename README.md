@@ -52,6 +52,14 @@ Ingest source files into the compiled wiki:
 python3 scripts/ghpf_wiki.py ingest --vault ./my-vault ./paper-notes.md
 ```
 
+Extract PDF, web page, local HTML, or YouTube transcript sources into Markdown, then ingest them:
+
+```bash
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest ./paper.pdf
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest https://example.com/article
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest https://www.youtube.com/watch?v=<id>
+```
+
 Track the Karpathy-style pipeline so steps are not skipped:
 
 ```bash
@@ -135,7 +143,7 @@ The maintenance loop follows Karpathy's LLM Wiki idea while keeping the vault po
 
 For bulk material, put source articles in `raw/graphify_articles/`, run Graphify externally, then import the resulting `graph.json` with `graphify-import`. Durable findings should be promoted into `wiki/`; `graph_imports/` can be regenerated or pruned.
 
-Heavy extractors such as YouTube transcripts, OCR, office parsing, and browser automation are treated as optional capabilities. `capabilities` reports what is available on the current machine so another user can clone the repo and let the workflow adapt to their environment.
+PDF extraction uses `pypdf` or `PyPDF2`. Web extraction uses Python's standard library. YouTube transcript extraction uses `youtube_transcript_api`, `yt-dlp`, or `uvx yt-dlp` when available. OCR, office parsing, and browser automation remain optional capabilities. `capabilities` reports what is available on the current machine so another user can clone the repo and let the workflow adapt to their environment.
 
 ## Cache Policy
 

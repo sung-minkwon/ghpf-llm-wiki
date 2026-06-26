@@ -14,6 +14,7 @@ Useful commands:
 
 ```bash
 python3 scripts/setup_vault.py --vault <path> --profile auto
+python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube>
 python3 scripts/ghpf_wiki.py graphify-import --vault <path> --graph <graph.json>
 python3 scripts/ghpf_wiki.py cache-clean --vault <path> --dry-run
 python3 scripts/ghpf_wiki.py graph --vault <path>
@@ -25,6 +26,7 @@ python3 scripts/ghpf_wiki.py task finish --vault <path> --title "<task>" --note 
 For Claude Code slash-command style use, say:
 
 - `/ghpf-setup` to initialize or repair a vault
+- `/ghpf-extract` to extract PDF, web, local HTML, or YouTube transcript sources
 - `/ghpf-ingest` to turn sources into wiki notes
 - `/ghpf-query` to answer from the wiki
 - `/ghpf-context` to create an agent handoff pack

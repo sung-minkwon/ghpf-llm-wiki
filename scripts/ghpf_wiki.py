@@ -10,8 +10,12 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
+from html.parser import HTMLParser
 from pathlib import Path
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
@@ -25,6 +29,9 @@ QUALITY_WEIGHTS = {
 }
 PIPELINE_STEPS = ["setup", "ingest", "compile", "lint", "strengthen", "file-back", "graph", "context"]
 GRAPHIFY_RAW_DIR = ("raw", "graphify_articles")
+TEXT_SOURCE_SUFFIXES = {".md", ".txt", ".csv", ".json", ".yaml", ".yml"}
+EXTRACTABLE_SUFFIXES = TEXT_SOURCE_SUFFIXES | {".pdf", ".html", ".htm"}
+URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 
 def slugify(text: str) -> str:
@@ -153,7 +160,7 @@ def source_candidates(vault: Path) -> list[Path]:
             rel_parts = path.relative_to(vault).parts
             if rel_parts[:2] == GRAPHIFY_RAW_DIR:
                 continue
-            if path.is_file() and path.suffix.lower() in {".md", ".txt", ".csv", ".json", ".yaml", ".yml"}:
+            if path.is_file() and path.suffix.lower() in EXTRACTABLE_SUFFIXES:
                 candidates.append(path)
     return sorted(set(candidates))
 
@@ -203,15 +210,303 @@ def page_title_from_path(path: Path) -> str:
     return titleize_slug(slugify(path.stem))
 
 
+class SimpleHTMLTextExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+        self.title_parts = []
+        self.skip_depth = 0
+        self.in_title = False
+
+    def handle_starttag(self, tag: str, attrs):
+        tag = tag.lower()
+        if tag in {"script", "style", "noscript", "svg"}:
+            self.skip_depth += 1
+        if tag == "title":
+            self.in_title = True
+        if tag in {"p", "div", "section", "article", "header", "footer", "li", "br", "h1", "h2", "h3"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str):
+        tag = tag.lower()
+        if tag in {"script", "style", "noscript", "svg"} and self.skip_depth:
+            self.skip_depth -= 1
+        if tag == "title":
+            self.in_title = False
+        if tag in {"p", "div", "section", "article", "li", "h1", "h2", "h3"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str):
+        cleaned = html.unescape(data).strip()
+        if not cleaned:
+            return
+        if self.in_title:
+            self.title_parts.append(cleaned)
+        if self.skip_depth == 0:
+            self.parts.append(cleaned)
+
+    @property
+    def title(self) -> str:
+        return " ".join(self.title_parts).strip()
+
+    @property
+    def text(self) -> str:
+        raw = " ".join(self.parts)
+        lines = [re.sub(r"\s+", " ", line).strip() for line in raw.splitlines()]
+        return "\n".join(line for line in lines if line)
+
+
+def is_url(value: str) -> bool:
+    return bool(URL_RE.match(value))
+
+
+def is_youtube_url(value: str) -> bool:
+    if not is_url(value):
+        return False
+    host = urllib.parse.urlparse(value).netloc.lower()
+    return "youtube.com" in host or "youtu.be" in host
+
+
+def youtube_video_id(value: str) -> str:
+    parsed = urllib.parse.urlparse(value)
+    if "youtu.be" in parsed.netloc.lower():
+        return parsed.path.strip("/")
+    query = urllib.parse.parse_qs(parsed.query)
+    return query.get("v", [""])[0]
+
+
+def normalize_extracted_text(text: str, max_chars: int = 200000) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    cleaned = "\n".join(line for line in lines if line)
+    return cleaned[:max_chars]
+
+
+def extracted_markdown_path(vault: Path, source_label: str, title: str, text: str) -> Path:
+    digest = hashlib.sha256(f"{source_label}\n{text}".encode("utf-8", errors="ignore")).hexdigest()[:12]
+    root = vault / "raw" / "sources" / "extracted"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{slugify(title or source_label)[:80]}-{digest}.md"
+
+
+def write_extracted_markdown(vault: Path, source_label: str, kind: str, title: str, text: str, warnings: list[str] | None = None) -> Path:
+    text = normalize_extracted_text(text)
+    if not text:
+        raise ValueError("NO_TEXT_EXTRACTED")
+    title = title.strip() or page_title_from_path(Path(urllib.parse.urlparse(source_label).path or source_label))
+    out = extracted_markdown_path(vault, source_label, title, text)
+    warning_lines = [f"- {warning}" for warning in (warnings or [])] or ["- None"]
+    out.write_text(
+        "\n".join(
+            [
+                f"# {title}",
+                "",
+                f"Original source: `{source_label}`",
+                f"Extraction kind: `{kind}`",
+                f"Extracted at: `{now_iso()}`",
+                "",
+                "## Extraction Warnings",
+                "",
+                *warning_lines,
+                "",
+                "## Extracted Text",
+                "",
+                text,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return out
+
+
+def extract_pdf_text(path: Path) -> str:
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        try:
+            from PyPDF2 import PdfReader
+        except Exception as exc:
+            raise RuntimeError("PDF extraction requires pypdf or PyPDF2.") from exc
+    reader = PdfReader(str(path))
+    pages = []
+    for index, page in enumerate(reader.pages, start=1):
+        page_text = page.extract_text() or ""
+        if page_text.strip():
+            pages.append(f"## Page {index}\n\n{page_text.strip()}")
+    return "\n\n".join(pages)
+
+
+def extract_html_text(content: str) -> tuple[str, str]:
+    parser = SimpleHTMLTextExtractor()
+    parser.feed(content)
+    return parser.title, parser.text
+
+
+def decode_response_body(body: bytes, content_type: str) -> str:
+    match = re.search(r"charset=([^;\s]+)", content_type, re.IGNORECASE)
+    encoding = match.group(1) if match else "utf-8"
+    return body.decode(encoding, errors="ignore")
+
+
+def fetch_url(url: str, max_bytes: int = 10_000_000) -> tuple[bytes, str]:
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 GHFP-LLM-Wiki/1.0"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return response.read(max_bytes), response.headers.get("content-type", "")
+
+
+def save_downloaded_pdf(vault: Path, url: str, body: bytes) -> Path:
+    digest = hashlib.sha256(body).hexdigest()[:12]
+    name = slugify(Path(urllib.parse.urlparse(url).path).stem or urllib.parse.urlparse(url).netloc or "download")
+    root = vault / "raw" / "sources" / "downloads"
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / f"{name}-{digest}.pdf"
+    if not path.exists():
+        path.write_bytes(body)
+    return path
+
+
+def clean_vtt_text(text: str) -> str:
+    lines = []
+    previous = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line == "WEBVTT" or line.startswith(("Kind:", "Language:", "NOTE")):
+            continue
+        if "-->" in line or re.fullmatch(r"\d+", line):
+            continue
+        line = re.sub(r"<[^>]+>", "", line)
+        line = html.unescape(line).strip()
+        if line and line != previous:
+            lines.append(line)
+            previous = line
+    return "\n".join(lines)
+
+
+def yt_dlp_command() -> list[str] | None:
+    if command_available("yt-dlp"):
+        return ["yt-dlp"]
+    if command_available("uvx"):
+        return ["uvx", "yt-dlp"]
+    return None
+
+
+def extract_youtube_transcript(url: str) -> tuple[str, str, list[str]]:
+    video_id = youtube_video_id(url)
+    warnings = []
+    if video_id:
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=["ko", "en"])
+            text = "\n".join(item.get("text", "") for item in transcript)
+            return f"YouTube {video_id}", text, warnings
+        except Exception as exc:
+            warnings.append(f"youtube_transcript_api unavailable or failed: {exc}")
+
+    dlp = yt_dlp_command()
+    if not dlp:
+        raise RuntimeError("YouTube extraction requires youtube_transcript_api, yt-dlp, or uvx.")
+
+    with tempfile.TemporaryDirectory(prefix="ghpf-youtube-") as temp_dir:
+        output_template = str(Path(temp_dir) / "%(id)s.%(ext)s")
+        cmd = [
+            *dlp,
+            "--skip-download",
+            "--write-subs",
+            "--write-auto-subs",
+            "--sub-langs",
+            "ko.*,en.*,ko,en",
+            "--sub-format",
+            "vtt",
+            "--print",
+            "title",
+            "-o",
+            output_template,
+            url,
+        ]
+        result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90, check=False)
+        title = result.stdout.strip().splitlines()[0] if result.stdout.strip() else f"YouTube {video_id or 'video'}"
+        if result.returncode != 0:
+            raise RuntimeError(f"yt-dlp failed: {result.stderr.strip()[:500]}")
+        vtt_files = sorted(Path(temp_dir).glob("*.vtt"))
+        if not vtt_files:
+            raise RuntimeError("yt-dlp did not produce subtitle VTT files.")
+        text = "\n".join(clean_vtt_text(path.read_text(encoding="utf-8", errors="ignore")) for path in vtt_files)
+        return title, text, warnings
+
+
+def extract_source_to_markdown(vault: Path, source_value: str | Path) -> dict:
+    vault = vault.expanduser()
+    value = str(source_value)
+    if is_youtube_url(value):
+        title, text, warnings = extract_youtube_transcript(value)
+        path = write_extracted_markdown(vault, value, "youtube-transcript", title, text, warnings=warnings)
+        return {"source": value, "path": path, "kind": "youtube-transcript", "extracted": True, "warnings": warnings}
+    if is_url(value):
+        body, content_type = fetch_url(value)
+        if "application/pdf" in content_type.lower() or urllib.parse.urlparse(value).path.lower().endswith(".pdf"):
+            pdf_path = save_downloaded_pdf(vault, value, body)
+            text = extract_pdf_text(pdf_path)
+            path = write_extracted_markdown(vault, value, "url-pdf", page_title_from_path(pdf_path), text)
+            return {"source": value, "path": path, "kind": "url-pdf", "extracted": True, "download": pdf_path}
+        title, text = extract_html_text(decode_response_body(body, content_type))
+        path = write_extracted_markdown(vault, value, "web-page", title or urllib.parse.urlparse(value).netloc, text)
+        return {"source": value, "path": path, "kind": "web-page", "extracted": True}
+
+    path = Path(value).expanduser()
+    if not path.exists() or not path.is_file():
+        return {"source": value, "error": "missing_or_not_file"}
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        text = extract_pdf_text(path)
+        out = write_extracted_markdown(vault, str(path), "pdf", page_title_from_path(path), text)
+        return {"source": value, "path": out, "kind": "pdf", "extracted": True, "original_path": path}
+    if suffix in {".html", ".htm"}:
+        title, text = extract_html_text(path.read_text(encoding="utf-8", errors="ignore"))
+        out = write_extracted_markdown(vault, str(path), "html-file", title or page_title_from_path(path), text)
+        return {"source": value, "path": out, "kind": "html-file", "extracted": True, "original_path": path}
+    return {"source": value, "path": path, "kind": "file", "extracted": False, "original_path": path}
+
+
+def extract_sources(vault: Path, sources: list[str]) -> dict:
+    extracted = []
+    skipped = []
+    for source in sources:
+        try:
+            result = extract_source_to_markdown(vault, source)
+        except Exception as exc:
+            skipped.append({"source": str(source), "reason": "extract_failed", "error": str(exc)})
+            continue
+        if result.get("error"):
+            skipped.append({"source": result["source"], "reason": result["error"]})
+        else:
+            record = {key: (value.as_posix() if isinstance(value, Path) else value) for key, value in result.items() if key != "original_path"}
+            extracted.append(record)
+    return {"extracted": extracted, "skipped": skipped}
+
+
 def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
     vault = vault.expanduser()
-    selected = [Path(s).expanduser() for s in sources] if sources else source_candidates(vault)
+    selected = sources if sources else source_candidates(vault)
     manifest = load_manifest(vault)
     known_hashes = {item.get("sha256") for item in manifest.get("sources", [])}
     ingested = []
     skipped = []
+    extracted = []
 
-    for source in selected:
+    for source_value in selected:
+        try:
+            prepared = extract_source_to_markdown(vault, source_value)
+        except Exception as exc:
+            skipped.append({"source": str(source_value), "reason": "extract_failed", "error": str(exc)})
+            continue
+        if prepared.get("error"):
+            skipped.append({"source": prepared["source"], "reason": prepared["error"]})
+            continue
+        source = prepared["path"]
+        if prepared.get("extracted"):
+            extracted.append({key: (value.as_posix() if isinstance(value, Path) else value) for key, value in prepared.items() if key != "original_path"})
         if not source.exists() or not source.is_file():
             skipped.append({"source": str(source), "reason": "missing_or_not_file"})
             continue
@@ -310,12 +605,13 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
         append_log(vault, f"ingested `{source_rel}` into `{page_rel}`.")
         ingested.append({"source": source_rel, "source_note": page_rel, "concept_pages": concept_pages})
 
-        if move and source.exists() and not source.resolve().is_relative_to((vault / "raw").resolve()):
-            source.unlink()
+        original_path = prepared.get("original_path")
+        if move and isinstance(original_path, Path) and original_path.exists() and not original_path.resolve().is_relative_to((vault / "raw").resolve()):
+            original_path.unlink()
 
     manifest["generated_pages"] = sorted(set(manifest.get("generated_pages", [])))
     save_manifest(vault, manifest)
-    return {"ingested": ingested, "skipped": skipped}
+    return {"ingested": ingested, "skipped": skipped, "extracted": extracted}
 
 
 def build_graph(vault: Path) -> dict:
@@ -751,14 +1047,14 @@ def python_module_available(module: str) -> bool:
 def capabilities(vault: Path | None = None) -> dict:
     modules = ["pypdf", "PyPDF2", "docx", "pptx", "openpyxl", "networkx", "youtube_transcript_api", "pytesseract", "playwright"]
     caps = {
-        "commands": {name: command_available(name) for name in ["git", "node", "npx", "uv", "graphify", "playwright", "yt-dlp", "tesseract", "obsidian"]},
+        "commands": {name: command_available(name) for name in ["git", "node", "npx", "uv", "uvx", "graphify", "playwright", "yt-dlp", "tesseract", "obsidian"]},
         "python_modules": {name: python_module_available(name) for name in modules},
         "optional_modes": {
             "basic_wikilink_search": True,
             "graph_sidecar": True,
             "graphify_import_ready": True,
             "graphify_cli_ready": command_available("graphify") or command_available("uv"),
-            "youtube_ingest_ready": command_available("yt-dlp") or python_module_available("youtube_transcript_api"),
+            "youtube_ingest_ready": command_available("yt-dlp") or command_available("uvx") or python_module_available("youtube_transcript_api"),
             "ocr_ready": command_available("tesseract") or python_module_available("pytesseract"),
             "office_extract_ready": python_module_available("docx") or python_module_available("pptx") or python_module_available("openpyxl"),
             "playwright_ready": command_available("playwright") or python_module_available("playwright") or command_available("npx"),
@@ -1051,9 +1347,14 @@ def main() -> int:
     graph_p = sub.add_parser("graph")
     graph_p.add_argument("--vault", default=".")
 
+    extract_p = sub.add_parser("extract")
+    extract_p.add_argument("--vault", default=".")
+    extract_p.add_argument("--ingest", action="store_true", help="Ingest extracted Markdown into wiki notes after extraction.")
+    extract_p.add_argument("sources", nargs="+", help="PDF files, HTML files, web URLs, YouTube URLs, or text files.")
+
     ingest_p = sub.add_parser("ingest")
     ingest_p.add_argument("--vault", default=".")
-    ingest_p.add_argument("sources", nargs="*", help="Files to ingest. Defaults to raw/ and _raw/.")
+    ingest_p.add_argument("sources", nargs="*", help="Files or URLs to ingest. Defaults to raw/ and _raw/.")
     ingest_p.add_argument("--move", action="store_true", help="Delete original external source after copying to raw/.")
 
     lint_p = sub.add_parser("lint")
@@ -1128,7 +1429,13 @@ def main() -> int:
     cache_clean_p.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args()
-    if args.command == "ingest":
+    if args.command == "extract":
+        result = extract_sources(Path(args.vault), args.sources)
+        if args.ingest:
+            paths = [item["path"] for item in result["extracted"]]
+            result["ingest"] = ingest_sources(Path(args.vault), paths)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == "ingest":
         print(json.dumps(ingest_sources(Path(args.vault), args.sources, move=args.move), ensure_ascii=False, indent=2))
     elif args.command == "lint":
         report = lint_wiki(Path(args.vault))
