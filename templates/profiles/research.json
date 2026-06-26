@@ -3,6 +3,7 @@
   "description": "Research paper and academic project wiki.",
   "folders": [
     "_raw",
+    "raw/figures",
     "raw/graphify_articles",
     "graph_imports",
     "wiki/sources",
@@ -14,6 +15,8 @@
     "wiki/cards/papers",
     "wiki/cards/experiments",
     "wiki/cards/strategies",
+    "wiki/cards/figures",
+    "wiki/figure-designs",
     "wiki/syntheses",
     "wiki/open-questions",
     "wiki/tasks",
@@ -23,6 +26,7 @@
     "swarmvault/context-packs",
     "swarmvault/task-ledger",
     "swarmvault/evaluations",
+    "swarmvault/exports/figures",
     "swarmvault/exports"
   ]
 }

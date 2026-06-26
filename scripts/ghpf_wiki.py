@@ -188,7 +188,32 @@ def summarize_text(text: str, max_lines: int = 12) -> list[str]:
 
 def extract_terms(text: str, limit: int = 12) -> list[str]:
     words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}|[가-힣]{2,}", text)
-    stop = {"this", "that", "with", "from", "have", "will", "into", "wiki", "source", "paper", "data"}
+    stop = {
+        "about",
+        "after",
+        "also",
+        "best",
+        "compare",
+        "create",
+        "data",
+        "from",
+        "have",
+        "into",
+        "must",
+        "rather",
+        "show",
+        "should",
+        "source",
+        "supports",
+        "than",
+        "that",
+        "this",
+        "useful",
+        "when",
+        "wiki",
+        "will",
+        "with",
+    }
     counts = {}
     for word in words:
         key = word.lower()
@@ -1062,7 +1087,7 @@ def python_module_available(module: str) -> bool:
 
 
 def capabilities(vault: Path | None = None) -> dict:
-    modules = ["pypdf", "PyPDF2", "docx", "pptx", "openpyxl", "networkx", "youtube_transcript_api", "pytesseract", "playwright"]
+    modules = ["pypdf", "PyPDF2", "docx", "pptx", "openpyxl", "networkx", "youtube_transcript_api", "pytesseract", "playwright", "matplotlib", "numpy"]
     caps = {
         "commands": {name: command_available(name) for name in ["git", "node", "npx", "uv", "uvx", "graphify", "playwright", "yt-dlp", "tesseract", "obsidian"]},
         "python_modules": {name: python_module_available(name) for name in modules},
@@ -1075,6 +1100,7 @@ def capabilities(vault: Path | None = None) -> dict:
             "ocr_ready": command_available("tesseract") or python_module_available("pytesseract"),
             "office_extract_ready": python_module_available("docx") or python_module_available("pptx") or python_module_available("openpyxl"),
             "playwright_ready": command_available("playwright") or python_module_available("playwright") or command_available("npx"),
+            "figure_export_ready": python_module_available("matplotlib") and python_module_available("numpy"),
         },
     }
     if vault is not None:
@@ -1558,6 +1584,340 @@ def evaluate_command(vault: Path, kind: str, target: str) -> dict:
     return report
 
 
+def infer_figure_domain(text: str, fallback: str = "generic") -> str:
+    lowered = text.lower()
+    if any(word in lowered for word in ["btc", "bitcoin", "equity curve", "drawdown", "regime", "momentum", "volatility", "backtest", "strategy"]):
+        return "trading"
+    if any(word in lowered for word in ["irrigation", "greenhouse", "substrate", "drain", "ec", "water content", "sensor", "관수"]):
+        return "irrigation"
+    return fallback
+
+
+def figure_panels(domain: str) -> list[dict]:
+    if domain == "trading":
+        return [
+            {"label": "A", "title": "Price And Regime", "plot": "line + regime shading", "purpose": "Show when the strategy is allowed to act."},
+            {"label": "B", "title": "Signal Stack", "plot": "momentum and volatility filter lines", "purpose": "Separate entry signal from risk filter."},
+            {"label": "C", "title": "Position Exposure", "plot": "step plot or filled exposure", "purpose": "Show whether the strategy actually changes risk."},
+            {"label": "D", "title": "Equity Curve", "plot": "strategy vs benchmark line", "purpose": "Compare absolute performance."},
+            {"label": "E", "title": "Drawdown", "plot": "area plot", "purpose": "Expose failure periods and rejection evidence."},
+        ]
+    if domain == "irrigation":
+        return [
+            {"label": "A", "title": "Substrate Water Content", "plot": "time-series line", "purpose": "Show plant-water state stability."},
+            {"label": "B", "title": "Irrigation Events", "plot": "bar/event markers", "purpose": "Show agent action timing and volume."},
+            {"label": "C", "title": "Drainage And EC Response", "plot": "dual line or paired lines", "purpose": "Connect water action to salinity/drain response."},
+            {"label": "D", "title": "Agent Decision Trace", "plot": "categorical step plot", "purpose": "Make LLM/tool decisions auditable."},
+            {"label": "E", "title": "Safety Interventions", "plot": "event markers", "purpose": "Show guardrail activation and rule violations."},
+        ]
+    return [
+        {"label": "A", "title": "Primary Outcome", "plot": "line or bar", "purpose": "Show the main dependent variable."},
+        {"label": "B", "title": "Mechanism Or Signal", "plot": "line/scatter", "purpose": "Show why the outcome changed."},
+        {"label": "C", "title": "Comparison", "plot": "treatment vs baseline", "purpose": "Support the claim against a baseline."},
+        {"label": "D", "title": "Failure Or Uncertainty", "plot": "error/drawdown/residual", "purpose": "Expose limits and robustness."},
+        {"label": "E", "title": "Decision Or Annotation Layer", "plot": "event markers", "purpose": "Make key events auditable."},
+    ]
+
+
+def figure_card_path(vault: Path, title: str) -> Path:
+    root = vault / "wiki" / "cards" / "figures"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{slugify(title)[:90]}.md"
+
+
+def generate_figure_card(vault: Path, page_rel: str, domain: str = "auto") -> dict:
+    vault = vault.expanduser()
+    page = vault_relative_path(vault, page_rel)
+    if not page.exists():
+        return {"page": page_rel, "error": "FILE_NOT_FOUND"}
+    content = page.read_text(encoding="utf-8", errors="ignore")
+    source_title = page_heading(content, page.name)
+    resolved_domain = infer_figure_domain(content, fallback="generic") if domain == "auto" else domain
+    terms = extract_terms(content, limit=12)
+    panels = figure_panels(resolved_domain)
+    title = f"{source_title} Figure Pattern"
+    out = figure_card_path(vault, title)
+    evidence = sentence_candidates(content, ["figure", "chart", "metric", "baseline", "drawdown", "irrigation", "signal", "decision", "experiment", "backtest"], limit=5) or fallback_bullets(content, 3)
+    lines = [
+        frontmatter_block({"tags": ["ghpf/card/figure", f"ghpf/figure/{resolved_domain}"], "source": page.relative_to(vault).as_posix(), "created": now_iso(), "aliases": [title]}).rstrip(),
+        f"# Figure Card: {title}",
+        "",
+        f"Source: `{page.relative_to(vault).as_posix()}`",
+        f"Domain: `{resolved_domain}`",
+        "",
+        "## Figure Type",
+        "",
+        f"- {panels[0]['plot']} multi-panel diagnostic figure",
+        "",
+        "## Encodes",
+        "",
+        *[f"- Panel {panel['label']}: {panel['title']} - {panel['purpose']}" for panel in panels],
+        "",
+        "## Design Pattern",
+        "",
+        "- Use shared x-axis when panels are time-based.",
+        "- Keep labels outside dense data regions.",
+        "- Export vector PDF/SVG first and PNG only as a preview.",
+        "",
+        "## Evidence Notes",
+        "",
+        *[f"- {item}" for item in evidence],
+        "",
+        "## Useful For",
+        "",
+        "- Manuscript result figure",
+        "- Experiment diagnostic figure",
+        "- Strategy validation chart",
+        "",
+        "## Links",
+        "",
+        " ".join(f"[[{titleize_slug(term)}]]" for term in terms[:8]) or "No key terms extracted.",
+        "",
+    ]
+    out.write_text("\n".join(lines), encoding="utf-8")
+    ensure_index_entry(vault, out.relative_to(vault).as_posix(), f"Figure Card: {title}")
+    return {"page": page.relative_to(vault).as_posix(), "figure_card": out.relative_to(vault).as_posix(), "domain": resolved_domain}
+
+
+def figure_card_command(vault: Path, pages: list[str], domain: str = "auto", all_sources: bool = False) -> dict:
+    vault = vault.expanduser()
+    selected = [p.relative_to(vault).as_posix() for p in markdown_files(vault) if "/wiki/sources/" in p.as_posix()] if all_sources else pages
+    results = [generate_figure_card(vault, page, domain=domain) for page in selected]
+    report = {"domain": domain, "count": len(results), "results": results}
+    out = vault / "swarmvault" / "exports" / "figure-card-report.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
+def read_data_schema(path_value: str | None) -> dict:
+    if not path_value:
+        return {}
+    path = Path(path_value).expanduser()
+    if not path.exists():
+        return {"path": str(path), "error": "FILE_NOT_FOUND"}
+    if path.suffix.lower() == ".json":
+        return json.loads(path.read_text(encoding="utf-8"))
+    if path.suffix.lower() == ".csv":
+        first = path.read_text(encoding="utf-8", errors="ignore").splitlines()[0] if path.read_text(encoding="utf-8", errors="ignore").splitlines() else ""
+        return {"path": str(path), "columns": [item.strip() for item in first.split(",") if item.strip()]}
+    return {"path": str(path), "description": path.read_text(encoding="utf-8", errors="ignore")[:2000]}
+
+
+def figure_insight_command(vault: Path, query: str, domain: str = "auto", data_schema: str | None = None, limit: int = 8) -> dict:
+    vault = vault.expanduser()
+    resolved_domain = infer_figure_domain(query, fallback="generic") if domain == "auto" else domain
+    schema = read_data_schema(data_schema)
+    search = hybrid_search(vault, f"{query} figure chart panel design {resolved_domain}", limit=limit)
+    panels = figure_panels(resolved_domain)
+    title = f"Figure Design - {query[:80]}"
+    out = vault / "wiki" / "figure-designs" / f"{slugify(title)[:100]}.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        frontmatter_block({"tags": ["ghpf/figure-design", f"ghpf/figure/{resolved_domain}"], "source": "figure-insight", "created": now_iso(), "aliases": [title]}).rstrip(),
+        f"# {title}",
+        "",
+        f"Query: `{query}`",
+        f"Domain: `{resolved_domain}`",
+        "",
+        "## Recommended Figure",
+        "",
+        f"- {len(panels)}-panel {resolved_domain} diagnostic figure",
+        "- Final-size first: use double-column width for dense multi-panel figures.",
+        "- Export as PDF and SVG; create PNG preview at 600 dpi.",
+        "",
+        "## Data Schema",
+        "",
+        "```json",
+        json.dumps(schema, ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "## Panel Plan",
+        "",
+    ]
+    for panel in panels:
+        lines.extend([f"### Panel {panel['label']}: {panel['title']}", "", f"- Plot: {panel['plot']}", f"- Purpose: {panel['purpose']}", ""])
+    lines.extend(["## Evidence From Wiki", ""])
+    for item in search["results"]:
+        snippet = re.sub(r"\s+", " ", item["text"]).strip()[:240]
+        lines.append(f"- score={item['score']} `{item['path']}`: {snippet}")
+    lines.extend(
+        [
+            "",
+            "## Export Guidance",
+            "",
+            "- Keep caption text in the manuscript, not inside the image.",
+            "- Use restrained colors with one accent color for intervention or regime markers.",
+            "- Use panel labels A-E and shared x-axis where possible.",
+            "",
+        ]
+    )
+    out.write_text("\n".join(lines), encoding="utf-8")
+    ensure_index_entry(vault, out.relative_to(vault).as_posix(), title)
+    return {"figure_design": out.relative_to(vault).as_posix(), "domain": resolved_domain, "evidence_count": len(search["results"]), "panels": len(panels)}
+
+
+def matplotlib_script(domain: str, figure_name: str) -> str:
+    panel_count = len(figure_panels(domain))
+    return f'''#!/usr/bin/env python3
+from pathlib import Path
+import argparse
+import csv
+import math
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def mm_to_in(value):
+    return value / 25.4
+
+
+def read_csv(path):
+    if not path:
+        return {{}}
+    with open(path, newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    data = {{}}
+    for key in rows[0].keys() if rows else []:
+        values = []
+        for row in rows:
+            try:
+                values.append(float(row[key]))
+            except (TypeError, ValueError):
+                values.append(np.nan)
+        data[key] = np.array(values, dtype=float)
+    return data
+
+
+def series(data, names, fallback):
+    for name in names:
+        if name in data and len(data[name]):
+            return data[name]
+    return fallback
+
+
+def make_data(domain, csv_path=None):
+    data = read_csv(csv_path)
+    n = max((len(v) for v in data.values()), default=160)
+    x = series(data, ["time", "day", "date", "index"], np.arange(n))
+    t = np.arange(len(x))
+    if domain == "trading":
+        price = series(data, ["price", "close", "BTC", "btc"], 100 + np.cumsum(np.sin(t / 8) + np.random.default_rng(7).normal(0, 0.4, len(t))))
+        momentum = series(data, ["momentum", "signal"], np.tanh(np.gradient(price) * 4))
+        volatility = series(data, ["volatility", "vol"], np.clip(np.abs(np.gradient(price)) / max(np.nanstd(price), 1e-6), 0, 2))
+        position = series(data, ["position", "exposure"], (momentum > 0).astype(float) * (volatility < 1.3))
+        equity = series(data, ["equity", "strategy_equity"], 1 + np.cumsum(np.nan_to_num(position[:-1], nan=0, posinf=0, neginf=0).tolist() + [0]) * np.nan_to_num(np.gradient(price), nan=0) / max(np.nanmean(price), 1e-6))
+        drawdown = equity / np.maximum.accumulate(equity) - 1
+        return x, [price, momentum, volatility, position, equity, drawdown]
+    swc = series(data, ["swc", "substrate_water_content", "water_content"], 55 + 4 * np.sin(t / 18) - 0.015 * t)
+    irrigation = series(data, ["irrigation", "irrigation_volume", "volume"], np.where((t % 24) == 8, 1.2 + 0.3 * np.sin(t / 13), 0))
+    drain = series(data, ["drain", "drain_fraction"], np.clip(irrigation * 0.25 + 0.05 * np.sin(t / 11), 0, None))
+    ec = series(data, ["ec", "EC"], 2.8 + 0.2 * np.sin(t / 17) - 0.1 * drain)
+    decision = series(data, ["decision", "agent_decision"], np.where(irrigation > 0, 1, 0))
+    safety = series(data, ["safety", "guardrail", "violation"], np.where((swc < np.nanpercentile(swc, 15)) | (ec > 3.0), 1, 0))
+    return x, [swc, irrigation, drain, ec, decision, safety]
+
+
+def build_figure(domain, csv_path=None):
+    plt.rcParams.update({{
+        "font.family": "DejaVu Sans",
+        "font.size": 8,
+        "axes.labelsize": 8,
+        "axes.titlesize": 9,
+        "xtick.labelsize": 7,
+        "ytick.labelsize": 7,
+        "legend.fontsize": 7,
+        "lines.linewidth": 1.2,
+    }})
+    x, values = make_data(domain, csv_path)
+    height_mm = 165 if domain in ("trading", "irrigation") else 125
+    fig, axes = plt.subplots({panel_count}, 1, figsize=(mm_to_in(180), mm_to_in(height_mm)), sharex=True, constrained_layout=True)
+    axes = np.atleast_1d(axes)
+    accent = "#2f6fbb"
+    danger = "#b23a48"
+    neutral = "#4c4c4c"
+    if domain == "trading":
+        price, momentum, volatility, position, equity, drawdown = values
+        regime = momentum > 0
+        axes[0].plot(x, price, color=neutral, label="BTC price")
+        axes[0].fill_between(x, np.nanmin(price), np.nanmax(price), where=regime, color=accent, alpha=0.10, label="risk-on")
+        axes[1].plot(x, momentum, color=accent, label="momentum")
+        axes[1].plot(x, volatility, color=danger, label="volatility")
+        axes[2].step(x, position, where="post", color=neutral, label="position")
+        axes[3].plot(x, equity, color=accent, label="strategy equity")
+        axes[4].fill_between(x, drawdown, 0, color=danger, alpha=0.35, label="drawdown")
+        titles = ["A. Price and regime", "B. Signal stack", "C. Position exposure", "D. Equity curve", "E. Drawdown"]
+        ylabels = ["Price", "Signal", "Exposure", "Equity", "Drawdown"]
+    else:
+        swc, irrigation, drain, ec, decision, safety = values
+        axes[0].plot(x, swc, color=accent, label="substrate water content")
+        axes[1].bar(x, irrigation, color=neutral, alpha=0.55, label="irrigation volume")
+        axes[2].plot(x, drain, color=accent, label="drain fraction")
+        axes[2].plot(x, ec, color=danger, label="EC")
+        axes[3].step(x, decision, where="post", color=neutral, label="agent decision")
+        axes[4].scatter(x[safety > 0], safety[safety > 0], color=danger, s=12, label="safety marker")
+        titles = ["A. Substrate water content", "B. Irrigation events", "C. Drainage and EC response", "D. Agent decision trace", "E. Safety interventions"]
+        ylabels = ["SWC (%)", "Volume", "Drain/EC", "Decision", "Event"]
+    for ax, title, ylabel in zip(axes, titles, ylabels):
+        ax.set_title(title, loc="left", fontweight="bold")
+        ax.set_ylabel(ylabel)
+        ax.grid(True, color="#d9d9d9", linewidth=0.5, alpha=0.7)
+        ax.legend(frameon=False, loc="best")
+    axes[-1].set_xlabel("Time")
+    return fig
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--domain", default="{domain}", choices=["irrigation", "trading", "generic"])
+    parser.add_argument("--csv")
+    parser.add_argument("--out-dir", default=".")
+    parser.add_argument("--name", default="{figure_name}")
+    args = parser.parse_args()
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig = build_figure(args.domain, args.csv)
+    for ext in ("pdf", "svg", "png"):
+        dpi = 600 if ext == "png" else None
+        fig.savefig(out_dir / f"{{args.name}}.{{ext}}", dpi=dpi, bbox_inches="tight")
+    print(out_dir / f"{{args.name}}.pdf")
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def figure_export_command(vault: Path, design: str | None, domain: str = "auto", name: str = "Figure_1", data: str | None = None, run: bool = False) -> dict:
+    vault = vault.expanduser()
+    design_text = ""
+    if design:
+        design_path = vault_relative_path(vault, design)
+        if design_path.exists():
+            design_text = design_path.read_text(encoding="utf-8", errors="ignore")
+    resolved_domain = infer_figure_domain(f"{domain} {design_text}", fallback="generic") if domain == "auto" else domain
+    figure_name = slugify(name).replace("-", "_") or "Figure_1"
+    out_dir = vault / "swarmvault" / "exports" / "figures" / figure_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    script_path = out_dir / "figure.py"
+    script_path.write_text(matplotlib_script(resolved_domain, figure_name), encoding="utf-8")
+    result = {"domain": resolved_domain, "script": script_path.relative_to(vault).as_posix(), "out_dir": out_dir.relative_to(vault).as_posix(), "ran": False, "outputs": []}
+    if run:
+        cmd = ["python3", str(script_path), "--domain", resolved_domain, "--out-dir", str(out_dir), "--name", figure_name]
+        if data:
+            cmd.extend(["--csv", str(Path(data).expanduser())])
+        completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=60)
+        result["ran"] = True
+        result["returncode"] = completed.returncode
+        result["stdout"] = completed.stdout.strip()
+        result["stderr"] = completed.stderr.strip()[:1000]
+        result["outputs"] = [p.relative_to(vault).as_posix() for p in sorted(out_dir.glob(f"{figure_name}.*"))]
+        if completed.returncode != 0:
+            result["error"] = "FIGURE_SCRIPT_FAILED"
+    return result
+
+
 def lint_wiki(vault: Path) -> dict:
     vault = vault.expanduser()
     pages = markdown_files(vault)
@@ -1747,6 +2107,27 @@ def main() -> int:
     evaluate_p.add_argument("--type", choices=["paper", "experiment", "strategy"], required=True)
     evaluate_p.add_argument("--target", required=True)
 
+    figure_card_p = sub.add_parser("figure-card")
+    figure_card_p.add_argument("--vault", default=".")
+    figure_card_p.add_argument("--domain", choices=["auto", "irrigation", "trading", "generic"], default="auto")
+    figure_card_p.add_argument("--all-sources", action="store_true")
+    figure_card_p.add_argument("pages", nargs="*", help="Wiki source pages to turn into figure cards.")
+
+    figure_insight_p = sub.add_parser("figure-insight")
+    figure_insight_p.add_argument("--vault", default=".")
+    figure_insight_p.add_argument("--domain", choices=["auto", "irrigation", "trading", "generic"], default="auto")
+    figure_insight_p.add_argument("--query", required=True)
+    figure_insight_p.add_argument("--data-schema")
+    figure_insight_p.add_argument("--limit", type=int, default=8)
+
+    figure_export_p = sub.add_parser("figure-export")
+    figure_export_p.add_argument("--vault", default=".")
+    figure_export_p.add_argument("--design")
+    figure_export_p.add_argument("--domain", choices=["auto", "irrigation", "trading", "generic"], default="auto")
+    figure_export_p.add_argument("--name", default="Figure_1")
+    figure_export_p.add_argument("--data", help="Optional CSV path with real data.")
+    figure_export_p.add_argument("--run", action="store_true", help="Run generated Matplotlib script and export PDF/SVG/PNG.")
+
     args = parser.parse_args()
     if args.command == "extract":
         result = extract_sources(Path(args.vault), args.sources)
@@ -1834,6 +2215,12 @@ def main() -> int:
         print(json.dumps(insight_command(Path(args.vault), args.type, args.query, limit=args.limit), ensure_ascii=False, indent=2))
     elif args.command == "evaluate":
         print(json.dumps(evaluate_command(Path(args.vault), args.type, args.target), ensure_ascii=False, indent=2))
+    elif args.command == "figure-card":
+        print(json.dumps(figure_card_command(Path(args.vault), args.pages, domain=args.domain, all_sources=args.all_sources), ensure_ascii=False, indent=2))
+    elif args.command == "figure-insight":
+        print(json.dumps(figure_insight_command(Path(args.vault), args.query, domain=args.domain, data_schema=args.data_schema, limit=args.limit), ensure_ascii=False, indent=2))
+    elif args.command == "figure-export":
+        print(json.dumps(figure_export_command(Path(args.vault), args.design, domain=args.domain, name=args.name, data=args.data, run=args.run), ensure_ascii=False, indent=2))
     return 0
 
 

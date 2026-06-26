@@ -166,6 +166,25 @@ Prefer this shape:
 4. Hybrid search before synthesis.
 5. Lightweight evaluation before treating an insight as durable.
 
+## Figure Workflows
+
+Use figure cards and figure design exports for manuscript figures, experiment diagnostics, and trading charts:
+
+```bash
+python3 scripts/ghpf_wiki.py figure-card --vault <path> --domain auto --all-sources
+python3 scripts/ghpf_wiki.py figure-insight --vault <path> --domain irrigation --query "<figure task>"
+python3 scripts/ghpf_wiki.py figure-insight --vault <path> --domain trading --query "<figure task>"
+python3 scripts/ghpf_wiki.py figure-export --vault <path> --design wiki/figure-designs/<design>.md --domain trading --name Figure_1 --run
+```
+
+Rules:
+
+1. Use `wiki/cards/figures/` for reusable visual patterns.
+2. Use `wiki/figure-designs/` for proposed panel layouts and manuscript/report guidance.
+3. Use `swarmvault/exports/figures/` for generated Python, PDF, SVG, and PNG files.
+4. Export PDF/SVG first; PNG is for preview or raster fallback.
+5. Keep captions in the manuscript or note, not inside the image.
+
 Prune disposable cache without touching `raw/` or `wiki/`:
 
 ```bash
@@ -191,10 +210,11 @@ Before using the wiki as high-value context, prefer this loop:
 2. `extract --ingest` for PDF, web, local HTML, or YouTube transcript sources.
 3. `ingest` to compile raw material into source notes.
 4. `card`, `index`, `search`, and `insight` for paper, experiment, or strategy insight.
-5. `quality` and `lint` to check metadata, coverage, broken links, and manifest drift.
-6. `link-audit` and `link-strengthen` to improve graph connectivity.
-7. `evaluate` before relying on generated insight.
-8. `graphify-import` when a bulk Graphify map should become searchable reference context.
-9. `file-back` to save reusable answers.
-10. `graph` and `context` to export sidecar artifacts for agents.
-11. `cache-clean --dry-run` before deleting disposable cache.
+5. `figure-card`, `figure-insight`, and `figure-export` for figure design and chart exports.
+6. `quality` and `lint` to check metadata, coverage, broken links, and manifest drift.
+7. `link-audit` and `link-strengthen` to improve graph connectivity.
+8. `evaluate` before relying on generated insight.
+9. `graphify-import` when a bulk Graphify map should become searchable reference context.
+10. `file-back` to save reusable answers.
+11. `graph` and `context` to export sidecar artifacts for agents.
+12. `cache-clean --dry-run` before deleting disposable cache.

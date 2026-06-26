@@ -125,6 +125,15 @@ python3 scripts/ghpf_wiki.py insight --vault ./my-vault --type strategy --query 
 python3 scripts/ghpf_wiki.py evaluate --vault ./my-vault --type experiment --target wiki/syntheses/<insight>.md
 ```
 
+Create figure design cards, propose a manuscript/strategy figure, and export Matplotlib outputs:
+
+```bash
+python3 scripts/ghpf_wiki.py figure-card --vault ./my-vault --domain auto --all-sources
+python3 scripts/ghpf_wiki.py figure-insight --vault ./my-vault --domain irrigation --query "LLM agent automatic irrigation result figure"
+python3 scripts/ghpf_wiki.py figure-insight --vault ./my-vault --domain trading --query "BTC regime momentum strategy diagnostic chart"
+python3 scripts/ghpf_wiki.py figure-export --vault ./my-vault --design wiki/figure-designs/<design>.md --domain trading --name Figure_1 --run
+```
+
 Prune temporary cache data without touching `raw/` or `wiki/`:
 
 ```bash
@@ -157,6 +166,8 @@ The maintenance loop follows Karpathy's LLM Wiki idea while keeping the vault po
 For bulk material, put source articles in `raw/graphify_articles/`, run Graphify externally, then import the resulting `graph.json` with `graphify-import`. Durable findings should be promoted into `wiki/`; `graph_imports/` can be regenerated or pruned.
 
 For paper, experiment, and trading strategy insight, use cards first. `card` creates compact reusable structure, `index` builds a local hashed-vector/keyword index, `search` runs hybrid retrieval, `insight` writes evidence-backed synthesis, and `evaluate` records lightweight quality checks.
+
+For figure work, use `figure-card` to capture reusable figure patterns, `figure-insight` to design panels from data goals and evidence, and `figure-export` to generate final-size Matplotlib code plus PDF/SVG/PNG outputs.
 
 PDF extraction uses `pypdf` or `PyPDF2`. Web extraction uses Python's standard library. YouTube transcript extraction uses `youtube_transcript_api`, `yt-dlp`, or `uvx yt-dlp` when available. OCR, office parsing, and browser automation remain optional capabilities. `capabilities` reports what is available on the current machine so another user can clone the repo and let the workflow adapt to their environment.
 

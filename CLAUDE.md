@@ -18,6 +18,8 @@ python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-yout
 python3 scripts/ghpf_wiki.py card --vault <path> --type paper --all-sources
 python3 scripts/ghpf_wiki.py index --vault <path>
 python3 scripts/ghpf_wiki.py insight --vault <path> --type experiment --query "<topic>"
+python3 scripts/ghpf_wiki.py figure-insight --vault <path> --domain trading --query "<figure topic>"
+python3 scripts/ghpf_wiki.py figure-export --vault <path> --domain trading --name Figure_1 --run
 python3 scripts/ghpf_wiki.py graphify-import --vault <path> --graph <graph.json>
 python3 scripts/ghpf_wiki.py cache-clean --vault <path> --dry-run
 python3 scripts/ghpf_wiki.py graph --vault <path>
@@ -33,3 +35,4 @@ For Claude Code slash-command style use, say:
 - `/ghpf-ingest` to turn sources into wiki notes
 - `/ghpf-query` to answer from the wiki
 - `/ghpf-context` to create an agent handoff pack
+- `/ghpf-figure` to design and export manuscript or trading diagnostic figures

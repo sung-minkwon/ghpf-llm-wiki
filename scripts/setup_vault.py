@@ -40,6 +40,7 @@ Profile: `{profile}`
 ## Canonical Layout
 
 - `raw/`: immutable source copies and intake material.
+- `raw/figures/`: copied or extracted figure image assets and chart references.
 - `raw/graphify_articles/`: bulk Graphify intake; normal `ingest` skips this folder.
 - `_raw/`: compatibility intake folder for Obsidian-style capture tools.
 - `wiki/`: compiled Markdown knowledge maintained by agents and humans.
@@ -47,6 +48,8 @@ Profile: `{profile}`
 - `wiki/concepts/`: durable ideas, methods, claims, and reusable patterns.
 - `wiki/entities/`: people, projects, organizations, assets, instruments, and code systems.
 - `wiki/cards/`: reusable paper, experiment, and strategy cards for insight workflows.
+- `wiki/cards/figures/`: reusable figure design cards.
+- `wiki/figure-designs/`: proposed figure layouts and export plans for manuscripts or strategy reports.
 - `wiki/syntheses/`: query answers and cross-source summaries filed back into the wiki.
 - `schema/`: wiki operating rules and validation expectations.
 - `graph_imports/`: imported Graphify reference layers. Treat these as useful maps, not canonical notes.
@@ -65,6 +68,7 @@ Profile: `{profile}`
 8. Search `graph_imports/` for broad map context, then promote durable findings into `wiki/`.
 9. Preserve `raw/` and `wiki/`; prune only cache/export artifacts with explicit cache commands.
 10. Prefer cards and hybrid search for insight work; avoid rereading full sources unless needed.
+11. For figure work, store reusable design evidence in `wiki/cards/figures/` and exported code/output in `swarmvault/exports/figures/`.
 """
 
 
@@ -116,15 +120,19 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
                 "profile_description": spec["description"],
                 "vault_root": str(vault.resolve()),
                 "raw_dir": "raw",
+                "figures_raw_dir": "raw/figures",
                 "graphify_raw_dir": "raw/graphify_articles",
                 "capture_dir": "_raw",
                 "wiki_dir": "wiki",
                 "cards_dir": "wiki/cards",
+                "figure_cards_dir": "wiki/cards/figures",
+                "figure_designs_dir": "wiki/figure-designs",
                 "graph_imports_dir": "graph_imports",
                 "schema_dir": "schema",
                 "sidecar_dir": "swarmvault",
                 "hybrid_index_dir": "swarmvault/state/hybrid-index",
                 "evaluations_dir": "swarmvault/evaluations",
+                "figure_exports_dir": "swarmvault/exports/figures",
                 "cache_dir": "swarmvault/cache",
                 "cache_policy": {"max_age_days": 30, "keep_latest": 10},
                 "created_at": now,

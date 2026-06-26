@@ -43,6 +43,16 @@ python3 scripts/ghpf_wiki.py insight --vault <path> --type experiment --query "<
 python3 scripts/ghpf_wiki.py evaluate --vault <path> --type experiment --target <insight-page>
 ```
 
+## /ghpf-figure
+
+Create figure design cards, propose a panel layout, and export Matplotlib outputs:
+
+```bash
+python3 scripts/ghpf_wiki.py figure-card --vault <path> --domain auto --all-sources
+python3 scripts/ghpf_wiki.py figure-insight --vault <path> --domain trading --query "<figure task>"
+python3 scripts/ghpf_wiki.py figure-export --vault <path> --domain trading --name Figure_1 --run
+```
+
 ## /ghpf-graph
 
 Refresh graph artifacts:
