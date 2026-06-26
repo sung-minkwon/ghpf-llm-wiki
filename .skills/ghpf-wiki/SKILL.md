@@ -10,8 +10,10 @@ Use this skill to create and operate a portable LLM Wiki.
 ## Core Model
 
 - Use `wiki/` as the canonical human-readable Markdown wiki.
-- Use `_raw/` as the source intake folder.
+- Use `raw/` as the immutable source intake folder.
+- Support `_raw/` as a compatibility intake folder for Obsidian capture tools.
 - Use `swarmvault/` for sidecar graph, context-pack, export, and task-ledger artifacts.
+- Keep `schema/AGENTS.md`, `wiki/index.md`, `wiki/log.md`, and `wiki/manifest.json` current.
 - Preserve existing notes. Merge targeted updates instead of rewriting broad folders.
 - Add `[[wikilinks]]` between papers, methods, claims, entities, strategies, experiments, and code modules.
 
@@ -34,13 +36,33 @@ python3 scripts/setup_vault.py --vault <path> --profile mixed
 
 ## Ingest
 
-For each source in `_raw/`:
+Use the helper for deterministic intake:
+
+```bash
+python3 scripts/ghpf_wiki.py ingest --vault <path> [source files...]
+```
+
+For each source in `raw/` or `_raw/`:
 
 1. Create a source note under `wiki/sources/`.
 2. Extract durable concepts, entities, claims, methods, strategies, experiments, and open questions.
 3. Merge into existing `wiki/concepts/`, `wiki/entities/`, project, paper, trading, or code notes.
 4. Add source references and `[[wikilinks]]`.
 5. Append the operation to `wiki/log.md`.
+
+## Maintain
+
+Run lint after ingest, file-back, or broad wiki edits:
+
+```bash
+python3 scripts/ghpf_wiki.py lint --vault <path>
+```
+
+File reusable answers back into the wiki:
+
+```bash
+python3 scripts/ghpf_wiki.py file-back --vault <path> --title "<answer title>" --body "<markdown>"
+```
 
 ## Sidecar Features
 
@@ -71,5 +93,4 @@ Answer from the wiki first:
 2. Search titles, headings, tags, and summaries.
 3. Open the smallest set of relevant pages.
 4. Cite page paths.
-5. If the answer should compound, save it under `wiki/syntheses/` or an appropriate domain folder.
-
+5. If the answer should compound, save it under `wiki/syntheses/` or an appropriate domain folder with `file-back`.

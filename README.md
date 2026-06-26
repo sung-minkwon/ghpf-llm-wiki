@@ -5,7 +5,7 @@ Obsidian-first LLM Wiki scaffold for research papers, trading strategy notes, co
 The default pattern is:
 
 - **Canonical wiki writer:** Obsidian-style Markdown under `wiki/`
-- **Raw source intake:** `_raw/`
+- **Raw source intake:** `raw/` with `_raw/` compatibility for Obsidian capture tools
 - **Sidecar intelligence:** SwarmVault-inspired graph, context packs, exports, and task ledger under `swarmvault/`
 - **Agent compatibility:** Codex via `AGENTS.md`, Claude Code via `CLAUDE.md`, and Antigravity via `.agent/`
 
@@ -39,6 +39,24 @@ python3 scripts/setup_vault.py --vault ~/obsidian/ghpf --source ~/papers --sourc
 
 ## Sidecar Commands
 
+Ingest source files into the compiled wiki:
+
+```bash
+python3 scripts/ghpf_wiki.py ingest --vault ./my-vault ./paper-notes.md
+```
+
+Lint wiki health:
+
+```bash
+python3 scripts/ghpf_wiki.py lint --vault ./my-vault
+```
+
+File a reusable answer back into the wiki:
+
+```bash
+python3 scripts/ghpf_wiki.py file-back --vault ./my-vault --title "BTC regime filter" --body "Reusable synthesis with [[wikilinks]]."
+```
+
 Build a wikilink graph:
 
 ```bash
@@ -61,4 +79,3 @@ python3 scripts/ghpf_wiki.py task finish --vault ./my-vault --title "Test BTC st
 ## Design Rule
 
 Keep `wiki/` as the human-readable canonical knowledge base. Let sidecar tools write only to `swarmvault/`, `wiki/tasks/`, and explicit exports unless a human asks for wiki edits.
-

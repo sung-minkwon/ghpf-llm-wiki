@@ -32,6 +32,35 @@ def write_if_missing(path: Path, content: str, force: bool = False) -> bool:
     return True
 
 
+def schema_agents_content(profile: str) -> str:
+    return f"""# GHFP Wiki Schema
+
+Profile: `{profile}`
+
+## Canonical Layout
+
+- `raw/`: immutable source copies and intake material.
+- `_raw/`: compatibility intake folder for Obsidian-style capture tools.
+- `wiki/`: compiled Markdown knowledge maintained by agents and humans.
+- `wiki/sources/`: one note per source.
+- `wiki/concepts/`: durable ideas, methods, claims, and reusable patterns.
+- `wiki/entities/`: people, projects, organizations, assets, instruments, and code systems.
+- `wiki/syntheses/`: query answers and cross-source summaries filed back into the wiki.
+- `schema/`: wiki operating rules and validation expectations.
+- `swarmvault/`: graph, context-pack, task-ledger, and export sidecar artifacts.
+
+## Operating Rules
+
+1. Preserve raw sources. Do not overwrite source files in `raw/`.
+2. Compile source material into stable wiki pages instead of answering only from raw chunks.
+3. Merge new facts into existing concept/entity/source pages when possible.
+4. Use `[[wikilinks]]` for durable relationships.
+5. Keep `wiki/index.md`, `wiki/log.md`, and `wiki/manifest.json` current.
+6. When a query produces reusable knowledge, file it back under `wiki/syntheses/`.
+7. Run lint after ingest or file-back work.
+"""
+
+
 def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = False) -> dict:
     if profile == "auto":
         detected = detect_profile(sources or [str(vault)])
@@ -42,6 +71,10 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
     spec = load_profile(profile)
     created_dirs = []
     for folder in spec["folders"]:
+        path = vault / folder
+        path.mkdir(parents=True, exist_ok=True)
+        created_dirs.append(str(path.relative_to(vault)))
+    for folder in ("raw", "schema"):
         path = vault / folder
         path.mkdir(parents=True, exist_ok=True)
         created_dirs.append(str(path.relative_to(vault)))
@@ -63,14 +96,22 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
         force=False,
     )
     write_if_missing(
+        vault / "wiki" / "manifest.json",
+        json.dumps({"sources": [], "generated_pages": [], "operations": []}, ensure_ascii=False, indent=2) + "\n",
+        force=False,
+    )
+    write_if_missing(vault / "schema" / "AGENTS.md", schema_agents_content(profile), force=force)
+    write_if_missing(
         vault / "ghpf.config.json",
         json.dumps(
             {
                 "profile": profile,
                 "profile_description": spec["description"],
                 "vault_root": str(vault.resolve()),
-                "raw_dir": "_raw",
+                "raw_dir": "raw",
+                "capture_dir": "_raw",
                 "wiki_dir": "wiki",
+                "schema_dir": "schema",
                 "sidecar_dir": "swarmvault",
                 "created_at": now,
             },
@@ -114,4 +155,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
