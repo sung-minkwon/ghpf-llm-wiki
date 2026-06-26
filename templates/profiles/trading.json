@@ -3,6 +3,8 @@
   "description": "Trading strategy, market-data, and backtest wiki.",
   "folders": [
     "_raw",
+    "raw/graphify_articles",
+    "graph_imports",
     "wiki/sources",
     "wiki/trading/strategies",
     "wiki/trading/backtests",
@@ -14,9 +16,9 @@
     "wiki/open-questions",
     "wiki/tasks",
     "swarmvault/state",
+    "swarmvault/cache",
     "swarmvault/context-packs",
     "swarmvault/task-ledger",
     "swarmvault/exports"
   ]
 }
-

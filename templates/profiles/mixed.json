@@ -3,6 +3,8 @@
   "description": "Combined research, trading strategy, and codebase wiki.",
   "folders": [
     "_raw",
+    "raw/graphify_articles",
+    "graph_imports",
     "wiki/sources",
     "wiki/papers",
     "wiki/methods",
@@ -20,9 +22,9 @@
     "wiki/open-questions",
     "wiki/tasks",
     "swarmvault/state",
+    "swarmvault/cache",
     "swarmvault/context-packs",
     "swarmvault/task-ledger",
     "swarmvault/exports"
   ]
 }
-

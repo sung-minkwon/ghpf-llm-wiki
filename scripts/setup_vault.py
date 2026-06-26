@@ -40,6 +40,7 @@ Profile: `{profile}`
 ## Canonical Layout
 
 - `raw/`: immutable source copies and intake material.
+- `raw/graphify_articles/`: bulk Graphify intake; normal `ingest` skips this folder.
 - `_raw/`: compatibility intake folder for Obsidian-style capture tools.
 - `wiki/`: compiled Markdown knowledge maintained by agents and humans.
 - `wiki/sources/`: one note per source.
@@ -47,7 +48,9 @@ Profile: `{profile}`
 - `wiki/entities/`: people, projects, organizations, assets, instruments, and code systems.
 - `wiki/syntheses/`: query answers and cross-source summaries filed back into the wiki.
 - `schema/`: wiki operating rules and validation expectations.
+- `graph_imports/`: imported Graphify reference layers. Treat these as useful maps, not canonical notes.
 - `swarmvault/`: graph, context-pack, task-ledger, and export sidecar artifacts.
+- `swarmvault/cache/`: temporary sidecar cache. Safe to prune with `cache-clean`.
 
 ## Operating Rules
 
@@ -58,6 +61,8 @@ Profile: `{profile}`
 5. Keep `wiki/index.md`, `wiki/log.md`, and `wiki/manifest.json` current.
 6. When a query produces reusable knowledge, file it back under `wiki/syntheses/`.
 7. Run lint after ingest or file-back work.
+8. Search `graph_imports/` for broad map context, then promote durable findings into `wiki/`.
+9. Preserve `raw/` and `wiki/`; prune only cache/export artifacts with explicit cache commands.
 """
 
 
@@ -109,10 +114,14 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
                 "profile_description": spec["description"],
                 "vault_root": str(vault.resolve()),
                 "raw_dir": "raw",
+                "graphify_raw_dir": "raw/graphify_articles",
                 "capture_dir": "_raw",
                 "wiki_dir": "wiki",
+                "graph_imports_dir": "graph_imports",
                 "schema_dir": "schema",
                 "sidecar_dir": "swarmvault",
+                "cache_dir": "swarmvault/cache",
+                "cache_policy": {"max_age_days": 30, "keep_latest": 10},
                 "created_at": now,
             },
             ensure_ascii=False,

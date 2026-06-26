@@ -11,8 +11,11 @@ Use this skill to create and operate a portable LLM Wiki.
 
 - Use `wiki/` as the canonical human-readable Markdown wiki.
 - Use `raw/` as the immutable source intake folder.
+- Use `raw/graphify_articles/` for bulk Graphify intake; normal `ingest` skips this folder.
 - Support `_raw/` as a compatibility intake folder for Obsidian capture tools.
+- Use `graph_imports/` as a non-canonical Graphify reference layer.
 - Use `swarmvault/` for sidecar graph, context-pack, export, and task-ledger artifacts.
+- Use `swarmvault/cache/` only for disposable cache.
 - Keep `schema/AGENTS.md`, `wiki/index.md`, `wiki/log.md`, and `wiki/manifest.json` current.
 - Preserve existing notes. Merge targeted updates instead of rewriting broad folders.
 - Add `[[wikilinks]]` between papers, methods, claims, entities, strategies, experiments, and code modules.
@@ -56,6 +59,21 @@ For each source in `raw/` or `_raw/`:
 4. Merge into existing `wiki/concepts/`, `wiki/entities/`, project, paper, trading, or code notes.
 5. Add source references and `[[wikilinks]]`.
 6. Append the operation to `wiki/log.md`.
+
+## Graphify Import
+
+Use Graphify for bulk source maps, then import the generated graph as a reference layer:
+
+```bash
+python3 scripts/ghpf_wiki.py graphify-import --vault <path> --graph <graph.json>
+```
+
+Rules:
+
+1. Put bulk source articles in `raw/graphify_articles/`.
+2. Keep imported map notes under `graph_imports/`.
+3. Search `graph_imports/` for broad context, but promote durable findings into `wiki/`.
+4. Do not treat `graph_imports/` as canonical source-of-truth notes.
 
 ## Maintain
 
@@ -119,13 +137,20 @@ python3 scripts/ghpf_wiki.py task start --vault <path> --title "<task>"
 python3 scripts/ghpf_wiki.py task finish --vault <path> --title "<task>" --note "<result>"
 ```
 
+Prune disposable cache without touching `raw/` or `wiki/`:
+
+```bash
+python3 scripts/ghpf_wiki.py cache-clean --vault <path> --max-age-days 30 --keep-latest 10 --dry-run
+python3 scripts/ghpf_wiki.py cache-clean --vault <path> --max-age-days 30 --keep-latest 10
+```
+
 ## Query
 
 Answer from the wiki first:
 
 1. Read `wiki/index.md`.
 2. Search titles, headings, tags, and summaries.
-3. Open the smallest set of relevant pages.
+3. Open the smallest set of relevant pages. If needed, search `graph_imports/` for broad Graphify context.
 4. Cite page paths.
 5. If the answer should compound, save it under `wiki/syntheses/` or an appropriate domain folder with `file-back`.
 
@@ -137,5 +162,7 @@ Before using the wiki as high-value context, prefer this loop:
 2. `ingest` to compile raw material into source notes.
 3. `quality` and `lint` to check metadata, coverage, broken links, and manifest drift.
 4. `link-audit` and `link-strengthen` to improve graph connectivity.
-5. `file-back` to save reusable answers.
-6. `graph` and `context` to export sidecar artifacts for agents.
+5. `graphify-import` when a bulk Graphify map should become searchable reference context.
+6. `file-back` to save reusable answers.
+7. `graph` and `context` to export sidecar artifacts for agents.
+8. `cache-clean --dry-run` before deleting disposable cache.

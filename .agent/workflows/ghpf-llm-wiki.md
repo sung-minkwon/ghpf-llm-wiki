@@ -32,3 +32,19 @@ Refresh graph artifacts:
 python3 scripts/ghpf_wiki.py graph --vault <path>
 ```
 
+## /ghpf-graphify-import
+
+Import a Graphify `graph.json` as non-canonical reference notes:
+
+```bash
+python3 scripts/ghpf_wiki.py graphify-import --vault <path> --graph <graph.json>
+```
+
+## /ghpf-cache-clean
+
+Preview and prune temporary sidecar cache:
+
+```bash
+python3 scripts/ghpf_wiki.py cache-clean --vault <path> --dry-run
+python3 scripts/ghpf_wiki.py cache-clean --vault <path>
+```

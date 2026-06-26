@@ -3,6 +3,8 @@
   "description": "Codebase architecture and experiment wiki.",
   "folders": [
     "_raw",
+    "raw/graphify_articles",
+    "graph_imports",
     "wiki/sources",
     "wiki/codebase/architecture",
     "wiki/codebase/modules",
@@ -13,9 +15,9 @@
     "wiki/open-questions",
     "wiki/tasks",
     "swarmvault/state",
+    "swarmvault/cache",
     "swarmvault/context-packs",
     "swarmvault/task-ledger",
     "swarmvault/exports"
   ]
 }
-

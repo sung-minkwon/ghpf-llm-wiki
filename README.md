@@ -6,6 +6,7 @@ The default pattern is:
 
 - **Canonical wiki writer:** Obsidian-style Markdown under `wiki/`
 - **Raw source intake:** `raw/` with `_raw/` compatibility for Obsidian capture tools
+- **Bulk graph reference layer:** Graphify intake in `raw/graphify_articles/` and imported maps under `graph_imports/`
 - **Sidecar intelligence:** SwarmVault-inspired graph, context packs, exports, and task ledger under `swarmvault/`
 - **Agent compatibility:** Codex via `AGENTS.md`, Claude Code via `CLAUDE.md`, and Antigravity via `.agent/`
 
@@ -84,6 +85,12 @@ Build a wikilink graph:
 python3 scripts/ghpf_wiki.py graph --vault ./my-vault
 ```
 
+Import an external Graphify map as a non-canonical reference layer:
+
+```bash
+python3 scripts/ghpf_wiki.py graphify-import --vault ./my-vault --graph ./graphify-output/graph.json
+```
+
 Audit and strengthen wikilinks:
 
 ```bash
@@ -97,6 +104,13 @@ Create a compact context pack for an agent:
 python3 scripts/ghpf_wiki.py context --vault ./my-vault --query "bitcoin regime filter strategy"
 ```
 
+Prune temporary cache data without touching `raw/` or `wiki/`:
+
+```bash
+python3 scripts/ghpf_wiki.py cache-clean --vault ./my-vault --max-age-days 30 --keep-latest 10 --dry-run
+python3 scripts/ghpf_wiki.py cache-clean --vault ./my-vault --max-age-days 30 --keep-latest 10
+```
+
 Record an agent task:
 
 ```bash
@@ -106,7 +120,7 @@ python3 scripts/ghpf_wiki.py task finish --vault ./my-vault --title "Test BTC st
 
 ## Design Rule
 
-Keep `wiki/` as the human-readable canonical knowledge base. Let sidecar tools write only to `swarmvault/`, `wiki/tasks/`, and explicit exports unless a human asks for wiki edits.
+Keep `wiki/` as the human-readable canonical knowledge base. Use `graph_imports/` only as an imported Graphify reference layer. Let sidecar tools write only to `swarmvault/`, `graph_imports/`, `wiki/tasks/`, and explicit exports unless a human asks for canonical wiki edits.
 
 ## Quality Loop
 
@@ -119,4 +133,13 @@ The maintenance loop follows Karpathy's LLM Wiki idea while keeping the vault po
 5. File reusable agent answers back into `wiki/syntheses/`.
 6. Refresh `graph` and `context` exports for downstream agents.
 
+For bulk material, put source articles in `raw/graphify_articles/`, run Graphify externally, then import the resulting `graph.json` with `graphify-import`. Durable findings should be promoted into `wiki/`; `graph_imports/` can be regenerated or pruned.
+
 Heavy extractors such as YouTube transcripts, OCR, office parsing, and browser automation are treated as optional capabilities. `capabilities` reports what is available on the current machine so another user can clone the repo and let the workflow adapt to their environment.
+
+## Cache Policy
+
+- Preserve `raw/` and `wiki/`.
+- Treat `swarmvault/cache/` as disposable.
+- Keep Graphify reference imports under `graph_imports/` separate from canonical notes.
+- Use `cache-clean` to delete old cache runs; use `--dry-run` before destructive cleanup.

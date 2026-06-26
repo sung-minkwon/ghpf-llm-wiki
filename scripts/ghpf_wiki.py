@@ -10,7 +10,7 @@ import json
 import re
 import shutil
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -24,6 +24,7 @@ QUALITY_WEIGHTS = {
     "suggestions": 0.15,
 }
 PIPELINE_STEPS = ["setup", "ingest", "compile", "lint", "strengthen", "file-back", "graph", "context"]
+GRAPHIFY_RAW_DIR = ("raw", "graphify_articles")
 
 
 def slugify(text: str) -> str:
@@ -36,6 +37,14 @@ def markdown_files(vault: Path):
     if not wiki.exists():
         return []
     return sorted(p for p in wiki.rglob("*.md") if p.is_file())
+
+
+def reference_markdown_files(vault: Path) -> list[Path]:
+    files = list(markdown_files(vault))
+    graph_imports = vault / "graph_imports"
+    if graph_imports.exists():
+        files.extend(sorted(p for p in graph_imports.rglob("*.md") if p.is_file()))
+    return files
 
 
 def now_iso() -> str:
@@ -141,6 +150,9 @@ def source_candidates(vault: Path) -> list[Path]:
         if not root.exists():
             continue
         for path in root.rglob("*"):
+            rel_parts = path.relative_to(vault).parts
+            if rel_parts[:2] == GRAPHIFY_RAW_DIR:
+                continue
             if path.is_file() and path.suffix.lower() in {".md", ".txt", ".csv", ".json", ".yaml", ".yml"}:
                 candidates.append(path)
     return sorted(set(candidates))
@@ -363,7 +375,7 @@ def render_graph_html(graph: dict) -> str:
 def build_context(vault: Path, query: str, limit: int = 8, max_chars: int = 1200) -> Path:
     terms = [t.lower() for t in re.findall(r"[\w가-힣]+", query) if len(t) > 1]
     scored = []
-    for path in markdown_files(vault):
+    for path in reference_markdown_files(vault):
         text = path.read_text(encoding="utf-8", errors="ignore")
         haystack = f"{path.stem} {path.as_posix()} {text}".lower()
         score = sum(haystack.count(term) for term in terms)
@@ -739,11 +751,13 @@ def python_module_available(module: str) -> bool:
 def capabilities(vault: Path | None = None) -> dict:
     modules = ["pypdf", "PyPDF2", "docx", "pptx", "openpyxl", "networkx", "youtube_transcript_api", "pytesseract", "playwright"]
     caps = {
-        "commands": {name: command_available(name) for name in ["git", "node", "npx", "playwright", "yt-dlp", "tesseract", "obsidian"]},
+        "commands": {name: command_available(name) for name in ["git", "node", "npx", "uv", "graphify", "playwright", "yt-dlp", "tesseract", "obsidian"]},
         "python_modules": {name: python_module_available(name) for name in modules},
         "optional_modes": {
             "basic_wikilink_search": True,
             "graph_sidecar": True,
+            "graphify_import_ready": True,
+            "graphify_cli_ready": command_available("graphify") or command_available("uv"),
             "youtube_ingest_ready": command_available("yt-dlp") or python_module_available("youtube_transcript_api"),
             "ocr_ready": command_available("tesseract") or python_module_available("pytesseract"),
             "office_extract_ready": python_module_available("docx") or python_module_available("pptx") or python_module_available("openpyxl"),
@@ -753,6 +767,205 @@ def capabilities(vault: Path | None = None) -> dict:
     if vault is not None:
         caps["vault"] = doctor(vault)
     return caps
+
+
+def edge_endpoint(edge, names: tuple[str, ...], index: int) -> str | None:
+    if isinstance(edge, dict):
+        for name in names:
+            value = edge.get(name)
+            if isinstance(value, dict):
+                value = value.get("id") or value.get("name") or value.get("label")
+            if value is not None:
+                return str(value)
+    elif isinstance(edge, (list, tuple)) and len(edge) > index:
+        return str(edge[index])
+    return None
+
+
+def normalize_graphify_graph(data: dict) -> tuple[list[dict], list[dict]]:
+    if isinstance(data.get("graph"), dict) and not data.get("nodes"):
+        data = data["graph"]
+    raw_nodes = data.get("nodes") or data.get("vertices") or []
+    raw_edges = data.get("edges") or data.get("links") or []
+    if isinstance(raw_nodes, dict):
+        raw_nodes = [{**value, "id": key} if isinstance(value, dict) else {"id": key, "label": value} for key, value in raw_nodes.items()]
+
+    nodes = {}
+    for item in raw_nodes:
+        if isinstance(item, dict):
+            node_id = str(item.get("id") or item.get("key") or item.get("name") or item.get("label") or item.get("title") or len(nodes))
+            title = str(item.get("title") or item.get("label") or item.get("name") or node_id)
+            body = item.get("summary") or item.get("description") or item.get("text") or item.get("content") or ""
+            kind = item.get("type") or item.get("kind") or item.get("group") or "graph-node"
+            nodes[node_id] = {"id": node_id, "title": title, "body": str(body), "kind": str(kind), "raw": item}
+        else:
+            node_id = str(item)
+            nodes[node_id] = {"id": node_id, "title": node_id, "body": "", "kind": "graph-node", "raw": {"id": node_id}}
+
+    edges = []
+    for item in raw_edges:
+        source = edge_endpoint(item, ("source", "from", "start", "src"), 0)
+        target = edge_endpoint(item, ("target", "to", "end", "dst"), 1)
+        if not source or not target:
+            continue
+        relation = "related"
+        if isinstance(item, dict):
+            relation = str(item.get("label") or item.get("type") or item.get("relation") or "related")
+        edges.append({"source": source, "target": target, "relation": relation})
+        for node_id in (source, target):
+            nodes.setdefault(node_id, {"id": node_id, "title": node_id, "body": "", "kind": "graph-node", "raw": {"id": node_id}})
+    return list(nodes.values()), edges
+
+
+def graphify_import(vault: Path, graph_json: Path, run_id: str | None = None, report: Path | None = None, html_file: Path | None = None, max_links: int = 20) -> dict:
+    vault = vault.expanduser()
+    graph_json = graph_json.expanduser()
+    data = json.loads(graph_json.read_text(encoding="utf-8"))
+    nodes, edges = normalize_graphify_graph(data)
+    run_id = slugify(run_id or f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{graph_json.parent.name or graph_json.stem}")
+    import_root = vault / "graph_imports" / run_id
+    node_root = import_root / "nodes"
+    node_root.mkdir(parents=True, exist_ok=True)
+
+    used_slugs = set()
+    id_to_title = {}
+    id_to_slug = {}
+    for node in nodes:
+        base = slugify(node["title"])
+        slug = base
+        suffix = 2
+        while slug in used_slugs:
+            slug = f"{base}-{suffix}"
+            suffix += 1
+        used_slugs.add(slug)
+        id_to_title[node["id"]] = titleize_slug(slug)
+        id_to_slug[node["id"]] = slug
+
+    adjacency = {node["id"]: [] for node in nodes}
+    for edge in edges:
+        adjacency.setdefault(edge["source"], []).append((edge["target"], edge["relation"]))
+        adjacency.setdefault(edge["target"], []).append((edge["source"], edge["relation"]))
+
+    pages = []
+    for node in nodes:
+        title = id_to_title[node["id"]]
+        page = node_root / f"{id_to_slug[node['id']]}.md"
+        related = []
+        for target, relation in adjacency.get(node["id"], [])[:max_links]:
+            if target in id_to_title:
+                related.append(f"- [[{id_to_title[target]}]] - {relation}")
+        raw_preview = json.dumps(node["raw"], ensure_ascii=False, indent=2)[:2000]
+        page.write_text(
+            frontmatter_block(
+                {
+                    "tags": ["ghpf/graph-import"],
+                    "source": graph_json.as_posix(),
+                    "created": now_iso(),
+                    "aliases": [title],
+                    "graphify_run": run_id,
+                }
+            )
+            + "\n".join(
+                [
+                    f"# {title}",
+                    "",
+                    "Graphify reference note. Promote durable knowledge into `wiki/` before treating it as canonical.",
+                    "",
+                    f"- Source node id: `{node['id']}`",
+                    f"- Node kind: `{node['kind']}`",
+                    "",
+                    "## Summary",
+                    "",
+                    node["body"] or "No summary provided by graph source.",
+                    "",
+                    "## Related Graph Nodes",
+                    "",
+                    *(related or ["No related nodes imported."]),
+                    "",
+                    "## Raw Node Preview",
+                    "",
+                    "```json",
+                    raw_preview,
+                    "```",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        pages.append(page.relative_to(vault).as_posix())
+
+    index = import_root / "index.md"
+    index.write_text(
+        "\n".join(
+            [
+                f"# Graphify Import: {run_id}",
+                "",
+                "This folder is a reference layer for broad map context. Keep canonical notes in `wiki/`.",
+                "",
+                f"- Source graph: `{graph_json}`",
+                f"- Imported nodes: {len(nodes)}",
+                f"- Imported edges: {len(edges)}",
+                "",
+                "## Nodes",
+                "",
+                *[f"- [[{id_to_title[node['id']]}]]" for node in nodes],
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cache_root = vault / "swarmvault" / "cache" / "graphify" / run_id
+    export_root = vault / "swarmvault" / "exports" / "graphify" / run_id
+    cache_root.mkdir(parents=True, exist_ok=True)
+    export_root.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(graph_json, cache_root / "graph.json")
+    for optional, target_name in ((report, "GRAPH_REPORT.md"), (html_file, "graph.html")):
+        if optional and optional.expanduser().exists():
+            shutil.copy2(optional.expanduser(), export_root / target_name)
+
+    manifest = load_manifest(vault)
+    manifest.setdefault("graph_imports", []).append({"run_id": run_id, "graph": str(graph_json), "imported_at": now_iso(), "nodes": len(nodes), "edges": len(edges), "path": import_root.relative_to(vault).as_posix()})
+    manifest.setdefault("operations", []).append({"type": "graphify_import", "time": now_iso(), "run_id": run_id})
+    save_manifest(vault, manifest)
+    append_log(vault, f"imported Graphify graph `{graph_json}` into `{import_root.relative_to(vault).as_posix()}`.")
+    return {"run_id": run_id, "nodes": len(nodes), "edges": len(edges), "import_root": import_root.relative_to(vault).as_posix(), "pages": pages, "cache": cache_root.relative_to(vault).as_posix()}
+
+
+def cache_clean(vault: Path, max_age_days: int = 30, keep_latest: int = 10, dry_run: bool = False, include_exports: bool = False) -> dict:
+    vault = vault.expanduser()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    roots = [vault / "swarmvault" / "cache"]
+    if include_exports:
+        roots.append(vault / "swarmvault" / "exports" / "graphify")
+    removed = []
+    kept = []
+
+    for root in roots:
+        if not root.exists():
+            continue
+        candidates = []
+        for child in root.iterdir():
+            if child.is_file():
+                candidates.append(child)
+            elif child.is_dir():
+                candidates.extend(sorted(child.iterdir()))
+        candidates = [item for item in candidates if item.exists()]
+        candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+        protected = set(candidates[:keep_latest])
+        for item in candidates:
+            modified = datetime.fromtimestamp(item.stat().st_mtime, tz=timezone.utc)
+            rel = item.relative_to(vault).as_posix()
+            if item in protected or modified >= cutoff:
+                kept.append(rel)
+                continue
+            removed.append(rel)
+            if not dry_run:
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+    return {"dry_run": dry_run, "max_age_days": max_age_days, "keep_latest": keep_latest, "include_exports": include_exports, "removed": removed, "kept": kept}
 
 
 def lint_wiki(vault: Path) -> dict:
@@ -818,10 +1031,14 @@ def doctor(vault: Path) -> dict:
         "vault": str(vault),
         "has_raw": (vault / "_raw").exists(),
         "has_karpathy_raw": (vault / "raw").exists(),
+        "has_graphify_raw": (vault / "raw" / "graphify_articles").exists(),
         "has_wiki": (vault / "wiki").exists(),
+        "has_graph_imports": (vault / "graph_imports").exists(),
         "has_schema": (vault / "schema" / "AGENTS.md").exists(),
         "has_sidecar": (vault / "swarmvault").exists(),
+        "has_cache": (vault / "swarmvault" / "cache").exists(),
         "markdown_pages": len(markdown_files(vault)),
+        "reference_markdown_pages": len(reference_markdown_files(vault)),
         "has_config": (vault / "ghpf.config.json").exists(),
         "has_manifest": manifest_path(vault).exists(),
     }
@@ -895,6 +1112,21 @@ def main() -> int:
     capabilities_p = sub.add_parser("capabilities")
     capabilities_p.add_argument("--vault")
 
+    graphify_p = sub.add_parser("graphify-import")
+    graphify_p.add_argument("--vault", default=".")
+    graphify_p.add_argument("--graph", required=True, help="Graphify graph.json path.")
+    graphify_p.add_argument("--run-id")
+    graphify_p.add_argument("--report", help="Optional GRAPH_REPORT.md path.")
+    graphify_p.add_argument("--html", help="Optional graph.html path.")
+    graphify_p.add_argument("--max-links", type=int, default=20)
+
+    cache_clean_p = sub.add_parser("cache-clean")
+    cache_clean_p.add_argument("--vault", default=".")
+    cache_clean_p.add_argument("--max-age-days", type=int, default=30)
+    cache_clean_p.add_argument("--keep-latest", type=int, default=10)
+    cache_clean_p.add_argument("--include-exports", action="store_true")
+    cache_clean_p.add_argument("--dry-run", action="store_true")
+
     args = parser.parse_args()
     if args.command == "ingest":
         print(json.dumps(ingest_sources(Path(args.vault), args.sources, move=args.move), ensure_ascii=False, indent=2))
@@ -944,6 +1176,28 @@ def main() -> int:
     elif args.command == "capabilities":
         vault = Path(args.vault).expanduser() if args.vault else None
         print(json.dumps(capabilities(vault), ensure_ascii=False, indent=2))
+    elif args.command == "graphify-import":
+        graph_path = Path(args.graph).expanduser()
+        report = Path(args.report).expanduser() if args.report else graph_path.parent / "GRAPH_REPORT.md"
+        html_path = Path(args.html).expanduser() if args.html else graph_path.parent / "graph.html"
+        report = report if report.exists() else None
+        html_path = html_path if html_path.exists() else None
+        result = graphify_import(Path(args.vault), graph_path, run_id=args.run_id, report=report, html_file=html_path, max_links=args.max_links)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == "cache-clean":
+        print(
+            json.dumps(
+                cache_clean(
+                    Path(args.vault),
+                    max_age_days=args.max_age_days,
+                    keep_latest=args.keep_latest,
+                    dry_run=args.dry_run,
+                    include_exports=args.include_exports,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     return 0
 
 
