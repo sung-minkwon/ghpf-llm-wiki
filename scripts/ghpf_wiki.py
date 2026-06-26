@@ -219,6 +219,10 @@ def extract_terms(text: str, limit: int = 12) -> list[str]:
         key = word.lower()
         if key in stop:
             continue
+        if re.fullmatch(r"[a-f0-9]{12,}", key):
+            continue
+        if len(key) >= 16 and sum(char.isdigit() for char in key) >= 4:
+            continue
         counts[key] = counts.get(key, 0) + 1
     return [word for word, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]]
 
