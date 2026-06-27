@@ -37,6 +37,17 @@ python3 scripts/ghpf_wiki.py lint --vault ./my-vault
 
 Then open `my-vault/` as an Obsidian vault and ask your agent to use the GHFP wiki workflow.
 
+### Existing Obsidian Vaults
+
+When connecting GHFP to an existing Obsidian vault, pass the folder that directly contains `.obsidian`:
+
+```bash
+python3 scripts/setup_vault.py --vault /path/to/your-vault --profile auto
+python3 scripts/ghpf_wiki.py doctor --vault /path/to/your-vault
+```
+
+Do not pass a parent folder that merely contains an Obsidian vault as a child. `setup_vault.py` refuses that case and prints the nested vault path to use instead.
+
 ## Profiles
 
 `setup_vault.py` can create folders from a profile:
@@ -116,6 +127,12 @@ Build a wikilink graph:
 
 ```bash
 python3 scripts/ghpf_wiki.py graph --vault ./my-vault
+```
+
+Obsidian Graph View note: `wiki/index.md` is a navigation hub and intentionally links many pages, so it can dominate the visual graph. For a more semantic graph, filter it out in Obsidian:
+
+```text
+-path:wiki/index.md -path:wiki/log.md -path:wiki/overview.md
 ```
 
 Import an external Graphify map as a non-canonical reference layer:

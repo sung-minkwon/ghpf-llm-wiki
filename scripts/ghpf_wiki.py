@@ -68,6 +68,39 @@ def reference_markdown_files(vault: Path) -> list[Path]:
     return files
 
 
+def find_obsidian_vaults(root: Path, max_depth: int = 3) -> list[Path]:
+    root = root.expanduser()
+    if not root.exists() or not root.is_dir():
+        return []
+    found = []
+    skip_names = {".git", ".obsidian", "__pycache__", "node_modules", ".venv", "venv"}
+    stack = [(root, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if (current / ".obsidian").is_dir():
+            found.append(current)
+        if depth >= max_depth:
+            continue
+        try:
+            children = list(current.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.is_dir() and child.name not in skip_names:
+                stack.append((child, depth + 1))
+    return sorted(set(found))
+
+
+def load_vault_config(vault: Path) -> dict:
+    config_path = vault / "ghpf.config.json"
+    if not config_path.exists():
+        return {}
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"_error": "invalid_json"}
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -3083,8 +3116,27 @@ def lint_wiki(vault: Path) -> dict:
 
 
 def doctor(vault: Path) -> dict:
+    vault = vault.expanduser()
+    config = load_vault_config(vault)
+    config_vault_root = config.get("vault_root") if isinstance(config, dict) else None
+    config_vault_root_matches = None
+    if config_vault_root:
+        try:
+            config_vault_root_matches = Path(config_vault_root).expanduser().resolve() == vault.resolve()
+        except OSError:
+            config_vault_root_matches = False
+    obsidian_vaults = find_obsidian_vaults(vault)
+    nested_obsidian_vaults = [path for path in obsidian_vaults if path != vault]
+    warnings = []
+    if not (vault / ".obsidian").is_dir() and nested_obsidian_vaults:
+        warnings.append("selected path is not an Obsidian vault, but nested Obsidian vaults were found; use the folder containing .obsidian as --vault")
+    if config_vault_root_matches is False:
+        warnings.append("ghpf.config.json vault_root does not match the selected --vault path")
     return {
         "vault": str(vault),
+        "resolved_vault": str(vault.resolve()),
+        "has_obsidian_config": (vault / ".obsidian").is_dir(),
+        "nested_obsidian_vaults": [str(path) for path in nested_obsidian_vaults],
         "has_raw": (vault / "_raw").exists(),
         "has_karpathy_raw": (vault / "raw").exists(),
         "has_graphify_raw": (vault / "raw" / "graphify_articles").exists(),
@@ -3096,7 +3148,10 @@ def doctor(vault: Path) -> dict:
         "markdown_pages": len(markdown_files(vault)),
         "reference_markdown_pages": len(reference_markdown_files(vault)),
         "has_config": (vault / "ghpf.config.json").exists(),
+        "config_vault_root": config_vault_root,
+        "config_vault_root_matches": config_vault_root_matches,
         "has_manifest": manifest_path(vault).exists(),
+        "warnings": warnings,
     }
 
 

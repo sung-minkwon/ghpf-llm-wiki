@@ -18,6 +18,7 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 - Put graph, retrieval, context-pack, cache, export, and task-ledger artifacts under `swarmvault/`.
 - Do not rewrite user notes broadly. Merge focused changes and preserve provenance.
 - For setup, run `./install.sh` for the default install or `python3 scripts/setup_vault.py --vault <path> --profile auto` for manual setup.
+- For an existing Obsidian vault, use the folder that directly contains `.obsidian` as `<path>`. If a user gives a parent folder, run `python3 scripts/ghpf_wiki.py doctor --vault <path>` and use the reported nested Obsidian vault path instead of writing to the parent.
 - For extract/video-frames/ingest/card/index/search/insight/evaluate/figure-card/figure-insight/figure-export/lint/quality/diff/state/link-audit/link-strengthen/graphify-import/cache-clean/file-back/graph/context/task sidecar work, run `python3 scripts/ghpf_wiki.py --help`.
 - Treat advanced PDF parsing, HWP/HWPX conversion, YouTube transcript metadata, OCR, office document parsing, and browser/DeepCloak fallback as optional environment capabilities. Check `python3 scripts/ghpf_wiki.py capabilities --vault <path>` before assuming they are installed.
 
@@ -29,7 +30,7 @@ When the user says a short natural-language request such as "이 문서를 LLM W
 
 1. Treat it as the full source intake workflow, not a request for a manual plan.
 2. Resolve the source from the provided attachment/path/URL, or from the only plausible PDF/Office/HTML source in the current working directory. If multiple sources are plausible, ask which one.
-3. Resolve the vault from the user's explicit path, the current project/vault context, an existing `./my-vault`, or create `./my-vault` via `./install.sh` when needed.
+3. Resolve the vault from the user's explicit path, the current project/vault context, an existing `./my-vault`, or create `./my-vault` via `./install.sh` when needed. For an existing Obsidian vault, verify that the selected path directly contains `.obsidian`; if it only contains a nested Obsidian vault, use the nested folder or ask before writing.
 4. Run `python3 scripts/ghpf_wiki.py extract --vault <vault> --ingest <source>` for PDF, web page, local HTML, Office/HWP, or YouTube transcript intake.
 5. If the user explicitly asks for YouTube/video/image visual frames, also run `python3 scripts/ghpf_wiki.py video-frames --vault <vault> --source <source> --ingest --figure-card`.
 6. Run `python3 scripts/ghpf_wiki.py index --vault <vault>` and `python3 scripts/ghpf_wiki.py lint --vault <vault>`.

@@ -32,6 +32,44 @@ def write_if_missing(path: Path, content: str, force: bool = False) -> bool:
     return True
 
 
+def find_obsidian_vaults(root: Path, max_depth: int = 3) -> list[Path]:
+    if not root.exists() or not root.is_dir():
+        return []
+    found = []
+    skip_names = {".git", ".obsidian", "__pycache__", "node_modules", ".venv", "venv"}
+    stack = [(root, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if (current / ".obsidian").is_dir():
+            found.append(current)
+        if depth >= max_depth:
+            continue
+        try:
+            children = list(current.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.is_dir() and child.name not in skip_names:
+                stack.append((child, depth + 1))
+    return sorted(set(found))
+
+
+def validate_vault_target(vault: Path) -> list[str]:
+    warnings = []
+    nested_vaults = [path for path in find_obsidian_vaults(vault) if path != vault]
+    if not (vault / ".obsidian").is_dir() and nested_vaults:
+        suggestions = "\n".join(f"  - {path}" for path in nested_vaults[:5])
+        raise SystemExit(
+            "Refusing to initialize this path because it contains nested Obsidian vaults, "
+            "but the selected path is not itself an Obsidian vault.\n"
+            "Use the folder that contains `.obsidian` as --vault instead:\n"
+            f"{suggestions}"
+        )
+    if vault.exists() and not (vault / ".obsidian").is_dir():
+        warnings.append("selected path has no .obsidian folder; this is fine for a new vault, but existing Obsidian vaults should point at the folder containing .obsidian")
+    return warnings
+
+
 def schema_agents_content(profile: str) -> str:
     return f"""# GHFP Wiki Schema
 
@@ -80,6 +118,8 @@ Profile: `{profile}`
 
 
 def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = False) -> dict:
+    vault = vault.expanduser()
+    warnings = validate_vault_target(vault)
     if profile == "auto":
         detected = detect_profile(sources or [str(vault)])
         profile = detected["profile"]
@@ -161,6 +201,7 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
         "profile": profile,
         "detected": detected,
         "created_dirs": created_dirs,
+        "warnings": warnings,
     }
 
 
@@ -184,6 +225,8 @@ def main() -> int:
         print(f"vault: {result['vault']}")
         print(f"profile: {result['profile']}")
         print(f"created_dirs: {len(result['created_dirs'])}")
+        for warning in result.get("warnings", []):
+            print(f"warning: {warning}", file=sys.stderr)
     return 0
 
 

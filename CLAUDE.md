@@ -5,6 +5,7 @@ This project supports Claude Code as an Obsidian-first LLM Wiki.
 Use the same rules as `AGENTS.md`:
 
 - `wiki/` is the canonical Markdown wiki.
+- For an existing Obsidian vault, use the folder that directly contains `.obsidian`; run `python3 scripts/ghpf_wiki.py doctor --vault <path>` when the path is uncertain.
 - `_raw/` stores unprocessed source material; `raw/graphify_articles/` stores bulk Graphify intake.
 - `graph_imports/` stores non-canonical Graphify reference maps.
 - `swarmvault/` stores graph, context pack, cache, export, and task ledger artifacts.
@@ -41,7 +42,7 @@ python3 scripts/ghpf_wiki.py index --vault <path>
 python3 scripts/ghpf_wiki.py lint --vault <path>
 ```
 
-Use the explicit vault if provided; otherwise use the current known vault or `./my-vault` after setup. For YouTube/video/image visual frames, also use `video-frames --ingest --figure-card` when the user asks for frame/image analysis. Report the created source note, preserved original or source URL, `evidence/index.jsonl`, evidence count, and lint result.
+Use the explicit vault if provided; otherwise use the current known vault or `./my-vault` after setup. For existing Obsidian vaults, verify that the path contains `.obsidian`; if `doctor` reports nested Obsidian vaults, use the nested vault folder rather than the parent. For YouTube/video/image visual frames, also use `video-frames --ingest --figure-card` when the user asks for frame/image analysis. Report the created source note, preserved original or source URL, `evidence/index.jsonl`, evidence count, and lint result.
 
 For Claude Code slash-command style use, say:
 
