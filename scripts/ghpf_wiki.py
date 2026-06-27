@@ -28,6 +28,8 @@ QUALITY_WEIGHTS = {
     "consistency": 0.20,
     "suggestions": 0.15,
 }
+NON_RETRIEVAL_PAGE_NAMES = {"index.md", "log.md", "overview.md"}
+NON_RETRIEVAL_SECTIONS = {"## Related Notes", "## Backlinks", "## Key Links"}
 PIPELINE_STEPS = ["setup", "ingest", "compile", "lint", "strengthen", "file-back", "graph", "context"]
 GRAPHIFY_RAW_DIR = ("raw", "graphify_articles")
 INTERNAL_RAW_PREFIXES = {
@@ -66,6 +68,10 @@ def reference_markdown_files(vault: Path) -> list[Path]:
     if graph_imports.exists():
         files.extend(sorted(p for p in graph_imports.rglob("*.md") if p.is_file()))
     return files
+
+
+def is_retrieval_page(path: Path) -> bool:
+    return path.name not in NON_RETRIEVAL_PAGE_NAMES
 
 
 def find_obsidian_vaults(root: Path, max_depth: int = 3) -> list[Path]:
@@ -1838,15 +1844,17 @@ def render_graph_html(graph: dict) -> str:
 
 
 def build_context(vault: Path, query: str, limit: int = 8, max_chars: int = 1200) -> Path:
-    terms = [t.lower() for t in re.findall(r"[\w가-힣]+", query) if len(t) > 1]
-    scored = []
-    for path in reference_markdown_files(vault):
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        haystack = f"{path.stem} {path.as_posix()} {text}".lower()
-        score = sum(haystack.count(term) for term in terms)
-        if score:
-            scored.append((score, path, text))
-    scored.sort(key=lambda item: (-item[0], item[1].as_posix()))
+    search = hybrid_search(vault, query, limit=max(limit * 4, limit, 1))
+    selected = []
+    seen_paths = set()
+    for item in search["results"]:
+        path = vault / item["path"]
+        rel = item["path"]
+        if path.exists() and is_retrieval_page(path) and rel not in seen_paths:
+            selected.append((item["score"], path, path.read_text(encoding="utf-8", errors="ignore")))
+            seen_paths.add(rel)
+        if len(selected) >= limit:
+            break
 
     out_dir = vault / "swarmvault" / "context-packs"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1860,11 +1868,11 @@ def build_context(vault: Path, query: str, limit: int = 8, max_chars: int = 1200
         "## Included Pages",
         "",
     ]
-    for score, path, text in scored[:limit]:
+    for score, path, text in selected:
         rel = path.relative_to(vault).as_posix()
         excerpt = text.strip().replace("\n\n", "\n")[:max_chars]
         lines.extend([f"### {rel}", "", f"Score: {score}", "", "```md", excerpt, "```", ""])
-    if not scored:
+    if not selected:
         lines.extend(["No matching wiki pages found.", ""])
 
     out_path.write_text("\n".join(lines), encoding="utf-8")
@@ -1970,7 +1978,7 @@ def quality_score(page: Path, source_text: str | None = None, consistency: float
 
 def run_quality(vault: Path, pages: list[str], strict: bool = False, consistency: float | None = None, suggestions: float | None = None, coverage: float | None = None) -> dict:
     vault = vault.expanduser()
-    selected = [vault / page for page in pages] if pages else [p for p in markdown_files(vault) if p.name not in {"index.md", "log.md", "overview.md"}]
+    selected = [vault / page for page in pages] if pages else [p for p in markdown_files(vault) if is_retrieval_page(p)]
     results = []
     for page in selected:
         if page.exists() and page.is_file():
@@ -2166,7 +2174,7 @@ def link_strengthen(vault: Path, page_rel: str, max_links: int = 5, backlink: bo
     existing_links = {link.lower() for link in WIKILINK_RE.findall(existing_text)}
     candidates = []
     for other in markdown_files(vault):
-        if other == page or other.name in {"index.md", "log.md"}:
+        if other == page or not is_retrieval_page(other):
             continue
         overlap = target_terms & page_terms(other)
         if not overlap or other.stem.lower() in existing_links or titleize_slug(other.stem).lower() in existing_links:
@@ -2736,6 +2744,8 @@ def chunk_page(vault: Path, page: Path, max_chars: int = 1200) -> list[dict]:
     sections = extract_sections(content)
     chunks = []
     for section, body in sections.items():
+        if section in NON_RETRIEVAL_SECTIONS:
+            continue
         paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
         current = ""
         for paragraph in paragraphs:
@@ -2759,7 +2769,7 @@ def build_hybrid_index(vault: Path) -> dict:
     chunks_path, db_path = index_paths(vault)
     chunks = []
     for page in reference_markdown_files(vault):
-        if page.name in {"index.md", "log.md"}:
+        if not is_retrieval_page(page):
             continue
         chunks.extend(chunk_page(vault, page))
     with chunks_path.open("w", encoding="utf-8") as handle:
@@ -3245,7 +3255,7 @@ def lint_wiki(vault: Path) -> dict:
 
     for page in pages:
         rel = page.relative_to(vault).as_posix()
-        if page.name in {"index.md", "log.md", "overview.md"}:
+        if not is_retrieval_page(page):
             continue
         if page.stem.lower() not in linked_targets and rel != "wiki/index.md":
             orphan_pages.append(rel)
@@ -3253,7 +3263,7 @@ def lint_wiki(vault: Path) -> dict:
     index_path = vault / "wiki" / "index.md"
     index_text = index_path.read_text(encoding="utf-8", errors="ignore") if index_path.exists() else ""
     for rel in sorted(page_rels):
-        if rel.startswith("wiki/") and rel not in index_text and Path(rel).name not in {"index.md", "log.md", "overview.md"}:
+        if rel.startswith("wiki/") and rel not in index_text and is_retrieval_page(Path(rel)):
             index_missing.append(rel)
 
     manifest = load_manifest(vault)
@@ -3271,7 +3281,7 @@ def lint_wiki(vault: Path) -> dict:
         "index_missing": index_missing,
         "manifest_missing": manifest_missing,
         "missing_required": missing_required,
-        "quality": run_quality(vault, [p.relative_to(vault).as_posix() for p in pages if p.name not in {"index.md", "log.md", "overview.md"}], strict=False),
+        "quality": run_quality(vault, [p.relative_to(vault).as_posix() for p in pages if is_retrieval_page(p)], strict=False),
     }
     report_path = vault / "swarmvault" / "exports" / "lint-report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
