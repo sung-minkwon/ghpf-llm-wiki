@@ -217,6 +217,87 @@ def ensure_index_entry(vault: Path, page_rel: str, title: str) -> None:
             handle.write(entry + "\n")
 
 
+def page_index_title(path: Path) -> str:
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    frontmatter, _ = parse_frontmatter(content)
+    aliases = frontmatter.get("aliases")
+    if isinstance(aliases, list) and aliases:
+        return str(aliases[0])
+    return titleize_slug(path.stem)
+
+
+def sync_wiki_index(vault: Path) -> dict:
+    added = []
+    index_path = vault / "wiki" / "index.md"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    if not index_path.exists():
+        index_path.write_text("# GHFP LLM Wiki Index\n\n## Core Areas\n\n", encoding="utf-8")
+    index_text = index_path.read_text(encoding="utf-8", errors="ignore")
+    for page in markdown_files(vault):
+        rel = page.relative_to(vault).as_posix()
+        if not rel.startswith("wiki/") or rel == "wiki/index.md" or not is_retrieval_page(page):
+            continue
+        if rel in index_text:
+            continue
+        ensure_index_entry(vault, rel, page_index_title(page))
+        added.append(rel)
+        index_text += f"\n{rel}"
+    return {"added": added, "added_count": len(added)}
+
+
+def root_index_bridge_content() -> str:
+    return """<!-- GHFP_ROOT_INDEX_BRIDGE -->
+# GHFP LLM Wiki Root Index
+
+This root file exists for compatibility with Obsidian helpers that expect `index.md` at the vault root.
+
+Canonical GHFP files:
+
+- [wiki/index.md](wiki/index.md)
+- [wiki/log.md](wiki/log.md)
+- [wiki/manifest.json](wiki/manifest.json)
+- [wiki/research-profile.md](wiki/research-profile.md)
+
+Use `wiki/index.md` as the canonical generated index. This bridge intentionally uses Markdown links instead of wikilinks so it does not add noisy graph edges.
+"""
+
+
+def root_log_bridge_content() -> str:
+    return """# GHFP LLM Wiki Root Log
+
+This root file exists for compatibility with helpers that expect `log.md` at the vault root.
+
+Canonical GHFP log: [wiki/log.md](wiki/log.md)
+"""
+
+
+def ensure_root_compatibility(vault: Path) -> dict:
+    root_index = vault / "index.md"
+    root_log = vault / "log.md"
+    created = []
+    preserved = []
+    if root_index.exists():
+        text = root_index.read_text(encoding="utf-8", errors="ignore")
+        if "<!-- GHFP_ROOT_INDEX_BRIDGE -->" in text:
+            root_index.write_text(root_index_bridge_content(), encoding="utf-8")
+        else:
+            preserved.append("index.md")
+    else:
+        root_index.write_text(root_index_bridge_content(), encoding="utf-8")
+        created.append("index.md")
+    if root_log.exists():
+        preserved.append("log.md")
+    else:
+        root_log.write_text(root_log_bridge_content(), encoding="utf-8")
+        created.append("log.md")
+    return {
+        "root_index": root_index.exists(),
+        "root_log": root_log.exists(),
+        "created": created,
+        "preserved": sorted(set(preserved)),
+    }
+
+
 def source_candidates(vault: Path) -> list[Path]:
     candidates = []
     for root_name in ("raw", "_raw"):
@@ -2928,6 +3009,8 @@ def index_paths(vault: Path) -> tuple[Path, Path]:
 
 def build_hybrid_index(vault: Path) -> dict:
     vault = vault.expanduser()
+    index_sync = sync_wiki_index(vault)
+    compatibility = ensure_root_compatibility(vault)
     chunks_path, db_path = index_paths(vault)
     chunks = []
     for page in reference_markdown_files(vault):
@@ -2948,7 +3031,14 @@ def build_hybrid_index(vault: Path) -> dict:
                 (chunk["chunk_id"], chunk["path"], chunk["title"], chunk["section"], chunk["text"], json.dumps(hashed_vector(f"{chunk['title']} {chunk['section']} {chunk['text']}"))),
             )
         conn.commit()
-    return {"chunks": len(chunks), "chunks_path": chunks_path.relative_to(vault).as_posix(), "vectors_path": db_path.relative_to(vault).as_posix(), "backend": "local-hashed-vector"}
+    return {
+        "chunks": len(chunks),
+        "chunks_path": chunks_path.relative_to(vault).as_posix(),
+        "vectors_path": db_path.relative_to(vault).as_posix(),
+        "backend": "local-hashed-vector",
+        "index_sync": index_sync,
+        "compatibility": compatibility,
+    }
 
 
 def load_index_chunks(vault: Path) -> list[dict]:
@@ -3435,6 +3525,11 @@ def lint_wiki(vault: Path) -> dict:
 
     required = ["raw", "wiki", "schema", "schema/AGENTS.md", "wiki/index.md", "wiki/log.md", "wiki/manifest.json"]
     missing_required = [item for item in required if not (vault / item).exists()]
+    compatibility = {
+        "root_index": (vault / "index.md").exists(),
+        "root_log": (vault / "log.md").exists(),
+        "root_index_bridge": "<!-- GHFP_ROOT_INDEX_BRIDGE -->" in (vault / "index.md").read_text(encoding="utf-8", errors="ignore") if (vault / "index.md").exists() else False,
+    }
     report = {
         "ok": not (broken_links or manifest_missing or missing_required),
         "pages": len(pages),
@@ -3443,6 +3538,7 @@ def lint_wiki(vault: Path) -> dict:
         "index_missing": index_missing,
         "manifest_missing": manifest_missing,
         "missing_required": missing_required,
+        "compatibility": compatibility,
         "quality": run_quality(vault, [p.relative_to(vault).as_posix() for p in pages if is_retrieval_page(p)], strict=False),
     }
     report_path = vault / "swarmvault" / "exports" / "lint-report.json"
@@ -3487,6 +3583,8 @@ def doctor(vault: Path) -> dict:
         "config_vault_root": config_vault_root,
         "config_vault_root_matches": config_vault_root_matches,
         "has_manifest": manifest_path(vault).exists(),
+        "has_root_index": (vault / "index.md").exists(),
+        "has_root_log": (vault / "log.md").exists(),
         "warnings": warnings,
     }
 

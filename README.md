@@ -48,6 +48,8 @@ python3 scripts/ghpf_wiki.py doctor --vault /path/to/your-vault
 
 Do not pass a parent folder that merely contains an Obsidian vault as a child. `setup_vault.py` refuses that case and prints the nested vault path to use instead.
 
+GHFP keeps canonical generated files under `wiki/`, but some Obsidian helpers expect root-level `index.md` and `log.md`. Setup and `index` create compatibility bridge files at the vault root without replacing an existing root `log.md`.
+
 ## Profiles
 
 `setup_vault.py` can create folders from a profile:

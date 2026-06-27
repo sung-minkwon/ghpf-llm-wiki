@@ -45,6 +45,54 @@ def ensure_index_entry(vault: Path, title: str, page_rel: str) -> None:
             handle.write(entry + "\n")
 
 
+def root_index_bridge_content() -> str:
+    return """<!-- GHFP_ROOT_INDEX_BRIDGE -->
+# GHFP LLM Wiki Root Index
+
+This root file exists for compatibility with Obsidian helpers that expect `index.md` at the vault root.
+
+Canonical GHFP files:
+
+- [wiki/index.md](wiki/index.md)
+- [wiki/log.md](wiki/log.md)
+- [wiki/manifest.json](wiki/manifest.json)
+- [wiki/research-profile.md](wiki/research-profile.md)
+
+Use `wiki/index.md` as the canonical generated index. This bridge intentionally uses Markdown links instead of wikilinks so it does not add noisy graph edges.
+"""
+
+
+def root_log_bridge_content() -> str:
+    return """# GHFP LLM Wiki Root Log
+
+This root file exists for compatibility with helpers that expect `log.md` at the vault root.
+
+Canonical GHFP log: [wiki/log.md](wiki/log.md)
+"""
+
+
+def ensure_root_compatibility(vault: Path) -> dict:
+    root_index = vault / "index.md"
+    root_log = vault / "log.md"
+    created = []
+    preserved = []
+    if root_index.exists():
+        text = root_index.read_text(encoding="utf-8", errors="ignore")
+        if "<!-- GHFP_ROOT_INDEX_BRIDGE -->" in text:
+            root_index.write_text(root_index_bridge_content(), encoding="utf-8")
+        else:
+            preserved.append("index.md")
+    else:
+        root_index.write_text(root_index_bridge_content(), encoding="utf-8")
+        created.append("index.md")
+    if root_log.exists():
+        preserved.append("log.md")
+    else:
+        root_log.write_text(root_log_bridge_content(), encoding="utf-8")
+        created.append("log.md")
+    return {"root_index": root_index.exists(), "root_log": root_log.exists(), "created": created, "preserved": sorted(set(preserved))}
+
+
 def find_obsidian_vaults(root: Path, max_depth: int = 3) -> list[Path]:
     if not root.exists() or not root.is_dir():
         return []
@@ -210,6 +258,7 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
         force=False,
     )
     write_if_missing(vault / "schema" / "AGENTS.md", schema_agents_content(profile), force=force)
+    root_compatibility = ensure_root_compatibility(vault)
     write_if_missing(
         vault / "ghpf.config.json",
         json.dumps(
@@ -252,6 +301,7 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
         "profile": profile,
         "detected": detected,
         "created_dirs": created_dirs,
+        "root_compatibility": root_compatibility,
         "warnings": warnings,
     }
 
