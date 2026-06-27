@@ -114,6 +114,7 @@ Profile: `{profile}`
 12. Prefer cards and hybrid search for insight work; avoid rereading full sources unless needed.
 13. For figure work, store reusable design evidence in `wiki/cards/figures/` and exported code/output in `swarmvault/exports/figures/`.
 14. For video or image frame work, preserve sampled frames under `raw/figures/video-frames/` and analysis manifests under `swarmvault/exports/video-frames/`.
+15. Use `maintenance` for cross-machine periodic cleanup and Graphify threshold checks. It stores shared state in `swarmvault/state/maintenance-state.json`.
 """
 
 

@@ -19,7 +19,7 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 - Do not rewrite user notes broadly. Merge focused changes and preserve provenance.
 - For setup, run `./install.sh` for the default install or `python3 scripts/setup_vault.py --vault <path> --profile auto` for manual setup.
 - For an existing Obsidian vault, use the folder that directly contains `.obsidian` as `<path>`. If a user gives a parent folder, run `python3 scripts/ghpf_wiki.py doctor --vault <path>` and use the reported nested Obsidian vault path instead of writing to the parent.
-- For extract/video-frames/ingest/card/index/search/insight/evaluate/figure-card/figure-insight/figure-export/lint/quality/diff/state/link-audit/link-strengthen/graphify-import/cache-clean/file-back/graph/context/task sidecar work, run `python3 scripts/ghpf_wiki.py --help`.
+- For extract/video-frames/ingest/card/index/search/insight/evaluate/figure-card/figure-insight/figure-export/lint/quality/diff/state/link-audit/link-strengthen/maintenance/graphify-import/cache-clean/file-back/graph/context/task sidecar work, run `python3 scripts/ghpf_wiki.py --help`.
 - Treat advanced PDF parsing, HWP/HWPX conversion, YouTube transcript metadata, OCR, office document parsing, and browser/DeepCloak fallback as optional environment capabilities. Check `python3 scripts/ghpf_wiki.py capabilities --vault <path>` before assuming they are installed.
 
 ## Expected Workflow
@@ -47,8 +47,9 @@ When the user says a short natural-language request such as "이 문서를 LLM W
 9. Use `video-frames` before `figure-card`, `figure-insight`, and `figure-export` when the task depends on chart screenshots, slides, or video frames.
 10. Link notes with `[[wikilinks]]`.
 11. Run `quality`, `lint`, `link-audit`, and `evaluate`; use `link-strengthen` when a note needs more useful cross-links.
-12. For bulk Graphify maps, import `graph.json` into `graph_imports/` and search it as broad context, not as canonical truth.
-13. File reusable query results back into `wiki/syntheses/`, then refresh graph/context packs when the wiki changes.
-14. Prune `swarmvault/cache/` with `cache-clean`; never use cache cleanup to remove `raw/` or `wiki/`.
+12. Run `maintenance` for periodic cross-machine cleanup and Graphify threshold checks. Its source-count checkpoint lives in `swarmvault/state/maintenance-state.json`.
+13. For bulk Graphify maps, import `graph.json` into `graph_imports/` and search it as broad context, not as canonical truth.
+14. File reusable query results back into `wiki/syntheses/`, then refresh graph/context packs when the wiki changes.
+15. Prune `swarmvault/cache/` with `cache-clean`; never use cache cleanup to remove `raw/` or `wiki/`.
 
 For Codex, use the skill in `.skills/ghpf-wiki/SKILL.md` when the task mentions GHFP, LLM Wiki, Obsidian wiki, research papers, trading strategy notes, context packs, or agent task memory.

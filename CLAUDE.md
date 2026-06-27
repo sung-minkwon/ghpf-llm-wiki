@@ -25,6 +25,8 @@ python3 scripts/ghpf_wiki.py insight --vault <path> --type experiment --query "<
 python3 scripts/ghpf_wiki.py figure-insight --vault <path> --domain trading --query "<figure topic>"
 python3 scripts/ghpf_wiki.py figure-export --vault <path> --domain trading --name Figure_1 --run
 python3 scripts/ghpf_wiki.py graphify-import --vault <path> --graph <graph.json>
+python3 scripts/ghpf_wiki.py maintenance --vault <path>
+python3 scripts/ghpf_wiki.py maintenance --vault <path> --threshold 20 --auto-graphify --graphify-graph <graph.json>
 python3 scripts/ghpf_wiki.py cache-clean --vault <path> --dry-run
 python3 scripts/ghpf_wiki.py graph --vault <path>
 python3 scripts/ghpf_wiki.py context --vault <path> --query "<topic>"

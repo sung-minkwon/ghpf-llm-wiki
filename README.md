@@ -148,6 +148,15 @@ python3 scripts/ghpf_wiki.py link-audit --vault ./my-vault
 python3 scripts/ghpf_wiki.py link-strengthen --vault ./my-vault --page wiki/sources/paper-notes.md --max-links 5 --backlink
 ```
 
+Run cross-machine maintenance and Graphify threshold checks:
+
+```bash
+python3 scripts/ghpf_wiki.py maintenance --vault ./my-vault
+python3 scripts/ghpf_wiki.py maintenance --vault ./my-vault --threshold 20 --auto-graphify --graphify-graph ./graphify-output/graph.json
+```
+
+`maintenance` refreshes the local index, link audit, graph export, and lint summary. It stores shared state in `swarmvault/state/maintenance-state.json`, so another computer using the same vault sees the same source count and last Graphify checkpoint. Graphify is recommended after the threshold is reached; actual import requires `--auto-graphify` plus an existing Graphify `graph.json`.
+
 Create a compact context pack for an agent:
 
 ```bash
@@ -202,8 +211,9 @@ The maintenance loop follows Karpathy's LLM Wiki idea while keeping the vault po
 2. Compile durable notes into `wiki/` with source coverage checklists and `[[wikilinks]]`.
 3. Run `quality`, `lint`, and `link-audit` before relying on the wiki as context.
 4. Use `link-strengthen` and manual review to add missing bidirectional links.
-5. File reusable agent answers back into `wiki/syntheses/`.
-6. Refresh `graph` and `context` exports for downstream agents.
+5. Run `maintenance` periodically; it records shared Graphify threshold state in the vault, not in the local repo checkout.
+6. File reusable agent answers back into `wiki/syntheses/`.
+7. Refresh `graph` and `context` exports for downstream agents.
 
 For bulk material, put source articles in `raw/graphify_articles/`, run Graphify externally, then import the resulting `graph.json` with `graphify-import`. Durable findings should be promoted into `wiki/`; `graph_imports/` can be regenerated or pruned.
 

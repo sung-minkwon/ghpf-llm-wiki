@@ -2441,6 +2441,134 @@ def cache_clean(vault: Path, max_age_days: int = 30, keep_latest: int = 10, dry_
     return {"dry_run": dry_run, "max_age_days": max_age_days, "keep_latest": keep_latest, "include_exports": include_exports, "removed": removed, "kept": kept}
 
 
+def maintenance_state_path(vault: Path) -> Path:
+    return vault / "swarmvault" / "state" / "maintenance-state.json"
+
+
+def load_maintenance_state(vault: Path) -> dict:
+    path = maintenance_state_path(vault)
+    if not path.exists():
+        return {"created_at": now_iso(), "graphify": {}}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"created_at": now_iso(), "graphify": {}, "warnings": ["maintenance-state.json was invalid JSON and was reset"]}
+
+
+def save_maintenance_state(vault: Path, state: dict) -> None:
+    path = maintenance_state_path(vault)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def count_sources_for_maintenance(vault: Path, manifest: dict) -> int:
+    sources = manifest.get("sources", [])
+    if sources:
+        return len(sources)
+    source_dir = vault / "wiki" / "sources"
+    return len(list(source_dir.glob("*.md"))) if source_dir.exists() else 0
+
+
+def summarize_lint(report: dict) -> dict:
+    return {
+        "ok": report.get("ok"),
+        "pages": report.get("pages"),
+        "broken_links_count": len(report.get("broken_links") or []),
+        "missing_required": report.get("missing_required") or [],
+        "manifest_missing_count": len(report.get("manifest_missing") or []),
+    }
+
+
+def summarize_link_audit(report: dict) -> dict:
+    return {
+        "pages": report.get("pages"),
+        "links": report.get("links"),
+        "average_links_per_page": report.get("average_links_per_page"),
+        "broken_links_count": len(report.get("broken_links") or []),
+        "orphans_count": len(report.get("orphans") or []),
+        "deadends_count": len(report.get("deadends") or []),
+        "one_way_links_count": len(report.get("one_way_links") or []),
+    }
+
+
+def maintenance(
+    vault: Path,
+    threshold: int = 20,
+    auto_graphify: bool = False,
+    force_graphify: bool = False,
+    graphify_graph: Path | None = None,
+    graphify_run_id: str | None = None,
+) -> dict:
+    vault = vault.expanduser()
+    manifest = load_manifest(vault)
+    state = load_maintenance_state(vault)
+    graphify_state = state.setdefault("graphify", {})
+
+    source_count = count_sources_for_maintenance(vault, manifest)
+    last_graphify_source_count = int(graphify_state.get("last_source_count") or 0)
+    new_sources_since_graphify = max(source_count - last_graphify_source_count, 0)
+    graphify_needed = force_graphify or (source_count > 0 and new_sources_since_graphify >= threshold)
+
+    index_report = build_hybrid_index(vault)
+    link_report = link_audit(vault)
+    graph_report = build_graph(vault)
+    lint_report = lint_wiki(vault)
+
+    graphify_status = "not_needed"
+    graphify_result = None
+    graphify_warning = None
+    if graphify_needed and auto_graphify:
+        if graphify_graph is not None:
+            graphify_result = graphify_import(vault, graphify_graph, run_id=graphify_run_id)
+            index_report = build_hybrid_index(vault)
+            graphify_status = "imported"
+            graphify_state["last_source_count"] = source_count
+            graphify_state["last_run_at"] = now_iso()
+            graphify_state["last_run_id"] = graphify_result.get("run_id")
+            graphify_state["last_import_root"] = graphify_result.get("import_root")
+            new_sources_since_graphify = 0
+            graphify_needed = False
+        elif command_available("graphify"):
+            graphify_status = "needed_but_no_graph_json"
+            graphify_warning = "graphify command is available, but this maintenance command imports graph.json and does not guess external CLI arguments"
+        else:
+            graphify_status = "needed_but_no_graph_json"
+            graphify_warning = "provide --graphify-graph <graph.json> or run Graphify externally before import"
+    elif graphify_needed:
+        graphify_status = "recommended"
+
+    state["last_checked_at"] = now_iso()
+    state["source_count"] = source_count
+    state["threshold"] = threshold
+    state["new_sources_since_graphify"] = new_sources_since_graphify
+    state["graphify_needed"] = graphify_needed
+    state["last_maintenance"] = {
+        "index_chunks": index_report.get("chunks"),
+        "graph_nodes": graph_report.get("node_count"),
+        "graph_edges": graph_report.get("edge_count"),
+        "lint_ok": lint_report.get("ok"),
+        "graphify_status": graphify_status,
+    }
+    save_maintenance_state(vault, state)
+
+    return {
+        "vault": str(vault),
+        "state_path": maintenance_state_path(vault).relative_to(vault).as_posix(),
+        "source_count": source_count,
+        "threshold": threshold,
+        "last_graphify_source_count": graphify_state.get("last_source_count", last_graphify_source_count),
+        "new_sources_since_graphify": new_sources_since_graphify,
+        "graphify_needed": graphify_needed,
+        "graphify_status": graphify_status,
+        "graphify_warning": graphify_warning,
+        "graphify_result": graphify_result,
+        "index": {"chunks": index_report.get("chunks"), "backend": index_report.get("backend")},
+        "link_audit": summarize_link_audit(link_report),
+        "graph": {"node_count": graph_report.get("node_count"), "edge_count": graph_report.get("edge_count")},
+        "lint": summarize_lint(lint_report),
+    }
+
+
 def page_heading(content: str, fallback: str) -> str:
     _, body = parse_frontmatter(content)
     for line in body.splitlines():
@@ -3243,6 +3371,14 @@ def main() -> int:
     cache_clean_p.add_argument("--include-exports", action="store_true")
     cache_clean_p.add_argument("--dry-run", action="store_true")
 
+    maintenance_p = sub.add_parser("maintenance")
+    maintenance_p.add_argument("--vault", default=".")
+    maintenance_p.add_argument("--threshold", type=int, default=20, help="Run or recommend Graphify after this many new source notes since the last Graphify import.")
+    maintenance_p.add_argument("--auto-graphify", action="store_true", help="Import a Graphify graph when the threshold is met and --graphify-graph is provided.")
+    maintenance_p.add_argument("--force-graphify", action="store_true", help="Treat Graphify as needed regardless of the threshold.")
+    maintenance_p.add_argument("--graphify-graph", help="Existing Graphify graph.json to import when Graphify is needed.")
+    maintenance_p.add_argument("--graphify-run-id")
+
     card_p = sub.add_parser("card")
     card_p.add_argument("--vault", default=".")
     card_p.add_argument("--type", choices=["paper", "experiment", "strategy"], required=True)
@@ -3371,6 +3507,22 @@ def main() -> int:
                     keep_latest=args.keep_latest,
                     dry_run=args.dry_run,
                     include_exports=args.include_exports,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    elif args.command == "maintenance":
+        graphify_graph = Path(args.graphify_graph).expanduser() if args.graphify_graph else None
+        print(
+            json.dumps(
+                maintenance(
+                    Path(args.vault),
+                    threshold=args.threshold,
+                    auto_graphify=args.auto_graphify,
+                    force_graphify=args.force_graphify,
+                    graphify_graph=graphify_graph,
+                    graphify_run_id=args.graphify_run_id,
                 ),
                 ensure_ascii=False,
                 indent=2,
