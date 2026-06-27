@@ -4,11 +4,12 @@ This project supports Claude Code as an Obsidian-first LLM Wiki.
 
 Use the same rules as `AGENTS.md`:
 
-- `wiki/` is the canonical Markdown wiki.
+- New vaults use numbered physical folders by default, for example `300. wiki/310. sources`; use GHFP commands and `ghpf.config.json` to resolve logical paths.
+- Logical `wiki/` is the canonical Markdown wiki.
 - For an existing Obsidian vault, use the folder that directly contains `.obsidian`; run `python3 scripts/ghpf_wiki.py doctor --vault <path>` when the path is uncertain.
-- `_raw/` stores unprocessed source material; `raw/graphify_articles/` stores bulk Graphify intake.
-- `graph_imports/` stores non-canonical Graphify reference maps.
-- `swarmvault/` stores graph, context pack, cache, export, and task ledger artifacts.
+- Logical `_raw/` stores unprocessed source material; logical `raw/graphify_articles/` stores bulk Graphify intake.
+- Logical `graph_imports/` stores non-canonical Graphify reference maps.
+- Logical `swarmvault/` stores graph, context pack, cache, export, and task ledger artifacts.
 - Add `[[wikilinks]]` when connecting concepts, papers, strategies, entities, and experiments.
 
 Useful commands:

@@ -19,6 +19,8 @@ from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from pathlib import Path
 
+import vault_layout as layout
+
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 QUALITY_REQUIRED_FIELDS = ["tags", "source", "created", "aliases"]
 QUALITY_WEIGHTS = {
@@ -58,7 +60,7 @@ def slugify(text: str) -> str:
 
 
 def markdown_files(vault: Path):
-    wiki = vault / "wiki"
+    wiki = vpath(vault, "wiki")
     if not wiki.exists():
         return []
     return sorted(p for p in wiki.rglob("*.md") if p.is_file())
@@ -66,7 +68,7 @@ def markdown_files(vault: Path):
 
 def reference_markdown_files(vault: Path) -> list[Path]:
     files = list(markdown_files(vault))
-    graph_imports = vault / "graph_imports"
+    graph_imports = vpath(vault, "graph_imports")
     if graph_imports.exists():
         files.extend(sorted(p for p in graph_imports.rglob("*.md") if p.is_file()))
     return files
@@ -100,13 +102,19 @@ def find_obsidian_vaults(root: Path, max_depth: int = 3) -> list[Path]:
 
 
 def load_vault_config(vault: Path) -> dict:
-    config_path = vault / "ghpf.config.json"
-    if not config_path.exists():
-        return {}
-    try:
-        return json.loads(config_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {"_error": "invalid_json"}
+    return layout.load_vault_config(vault)
+
+
+def vpath(vault: Path, logical_rel: str | Path) -> Path:
+    return layout.resolve_vault_path(vault, logical_rel)
+
+
+def vactual(vault: Path, logical_rel: str | Path) -> str:
+    return layout.actual_rel_for(vault, logical_rel)
+
+
+def vlogical(vault: Path, path: Path) -> str:
+    return layout.to_logical_rel(vault, path)
 
 
 def now_iso() -> str:
@@ -151,7 +159,7 @@ def frontmatter_block(fields: dict) -> str:
 
 
 def manifest_path(vault: Path) -> Path:
-    return vault / "wiki" / "manifest.json"
+    return vpath(vault, "wiki/manifest.json")
 
 
 def load_manifest(vault: Path) -> dict:
@@ -197,7 +205,7 @@ def titleize_slug(slug: str) -> str:
 
 
 def append_log(vault: Path, message: str) -> None:
-    log_path = vault / "wiki" / "log.md"
+    log_path = vpath(vault, "wiki/log.md")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     if not log_path.exists():
         log_path.write_text("# GHFP LLM Wiki Log\n\n", encoding="utf-8")
@@ -206,7 +214,7 @@ def append_log(vault: Path, message: str) -> None:
 
 
 def ensure_index_entry(vault: Path, page_rel: str, title: str) -> None:
-    index_path = vault / "wiki" / "index.md"
+    index_path = vpath(vault, "wiki/index.md")
     index_path.parent.mkdir(parents=True, exist_ok=True)
     if not index_path.exists():
         index_path.write_text("# GHFP LLM Wiki Index\n\n## Pages\n\n", encoding="utf-8")
@@ -230,14 +238,15 @@ def page_index_title(path: Path) -> str:
 
 def sync_wiki_index(vault: Path) -> dict:
     added = []
-    index_path = vault / "wiki" / "index.md"
+    index_path = vpath(vault, "wiki/index.md")
     index_path.parent.mkdir(parents=True, exist_ok=True)
     if not index_path.exists():
         index_path.write_text("# GHFP LLM Wiki Index\n\n## Core Areas\n\n", encoding="utf-8")
     index_text = index_path.read_text(encoding="utf-8", errors="ignore")
     for page in markdown_files(vault):
+        logical_rel = vlogical(vault, page)
         rel = page.relative_to(vault).as_posix()
-        if not rel.startswith("wiki/") or rel == "wiki/index.md" or not is_retrieval_page(page):
+        if not logical_rel.startswith("wiki/") or logical_rel == "wiki/index.md" or not is_retrieval_page(page):
             continue
         if rel in index_text:
             continue
@@ -247,29 +256,34 @@ def sync_wiki_index(vault: Path) -> dict:
     return {"added": added, "added_count": len(added)}
 
 
-def root_index_bridge_content() -> str:
-    return """<!-- GHFP_ROOT_INDEX_BRIDGE -->
+def root_index_bridge_content(vault: Path | None = None) -> str:
+    index_rel = vactual(vault, "wiki/index.md") if vault else "wiki/index.md"
+    log_rel = vactual(vault, "wiki/log.md") if vault else "wiki/log.md"
+    manifest_rel = vactual(vault, "wiki/manifest.json") if vault else "wiki/manifest.json"
+    profile_rel = vactual(vault, "wiki/research-profile.md") if vault else "wiki/research-profile.md"
+    return f"""<!-- GHFP_ROOT_INDEX_BRIDGE -->
 # GHFP LLM Wiki Root Index
 
 This root file exists for compatibility with Obsidian helpers that expect `index.md` at the vault root.
 
 Canonical GHFP files:
 
-- [wiki/index.md](wiki/index.md)
-- [wiki/log.md](wiki/log.md)
-- [wiki/manifest.json](wiki/manifest.json)
-- [wiki/research-profile.md](wiki/research-profile.md)
+- [{index_rel}]({index_rel})
+- [{log_rel}]({log_rel})
+- [{manifest_rel}]({manifest_rel})
+- [{profile_rel}]({profile_rel})
 
-Use `wiki/index.md` as the canonical generated index. This bridge intentionally uses Markdown links instead of wikilinks so it does not add noisy graph edges.
+Use `{index_rel}` as the canonical generated index. This bridge intentionally uses Markdown links instead of wikilinks so it does not add noisy graph edges.
 """
 
 
-def root_log_bridge_content() -> str:
-    return """# GHFP LLM Wiki Root Log
+def root_log_bridge_content(vault: Path | None = None) -> str:
+    log_rel = vactual(vault, "wiki/log.md") if vault else "wiki/log.md"
+    return f"""# GHFP LLM Wiki Root Log
 
 This root file exists for compatibility with helpers that expect `log.md` at the vault root.
 
-Canonical GHFP log: [wiki/log.md](wiki/log.md)
+Canonical GHFP log: [{log_rel}]({log_rel})
 """
 
 
@@ -281,16 +295,16 @@ def ensure_root_compatibility(vault: Path) -> dict:
     if root_index.exists():
         text = root_index.read_text(encoding="utf-8", errors="ignore")
         if "<!-- GHFP_ROOT_INDEX_BRIDGE -->" in text:
-            root_index.write_text(root_index_bridge_content(), encoding="utf-8")
+            root_index.write_text(root_index_bridge_content(vault), encoding="utf-8")
         else:
             preserved.append("index.md")
     else:
-        root_index.write_text(root_index_bridge_content(), encoding="utf-8")
+        root_index.write_text(root_index_bridge_content(vault), encoding="utf-8")
         created.append("index.md")
     if root_log.exists():
         preserved.append("log.md")
     else:
-        root_log.write_text(root_log_bridge_content(), encoding="utf-8")
+        root_log.write_text(root_log_bridge_content(vault), encoding="utf-8")
         created.append("log.md")
     return {
         "root_index": root_index.exists(),
@@ -302,15 +316,19 @@ def ensure_root_compatibility(vault: Path) -> dict:
 
 def source_candidates(vault: Path) -> list[Path]:
     candidates = []
-    for root_name in ("raw", "_raw"):
-        root = vault / root_name
+    skip_roots = [
+        vpath(vault, "raw/originals"),
+        vpath(vault, "raw/sources"),
+        vpath(vault, "raw/sources/extracted"),
+        vpath(vault, "raw/sources/downloads"),
+        vpath(vault, "raw/figures/video-frames"),
+        vpath(vault, "raw/graphify_articles"),
+    ]
+    for root in (vpath(vault, "raw"), vpath(vault, "_raw")):
         if not root.exists():
             continue
         for path in root.rglob("*"):
-            rel_parts = path.relative_to(vault).parts
-            if rel_parts[:2] == GRAPHIFY_RAW_DIR:
-                continue
-            if any(rel_parts[: len(prefix)] == prefix for prefix in INTERNAL_RAW_PREFIXES):
+            if any(layout.path_is_relative_to(path, skip_root) for skip_root in skip_roots):
                 continue
             if path.is_file() and path.suffix.lower() in EXTRACTABLE_SUFFIXES:
                 candidates.append(path)
@@ -318,9 +336,9 @@ def source_candidates(vault: Path) -> list[Path]:
 
 
 def copy_to_raw(vault: Path, source: Path) -> Path:
-    raw_root = vault / "raw" / "sources"
+    raw_root = vpath(vault, "raw/sources")
     raw_root.mkdir(parents=True, exist_ok=True)
-    if source.resolve().is_relative_to((vault / "raw").resolve()):
+    if layout.path_is_relative_to(source, vpath(vault, "raw")):
         return source
     digest = sha256_file(source)[:12]
     target = raw_root / f"{slugify(source.stem)}-{digest}{source.suffix.lower() or '.txt'}"
@@ -337,7 +355,7 @@ def vault_rel(vault: Path, path: Path) -> str:
 
 
 def original_asset_path(vault: Path, label: str, digest: str, suffix: str) -> Path:
-    root = vault / "raw" / "originals"
+    root = vpath(vault, "raw/originals")
     root.mkdir(parents=True, exist_ok=True)
     clean_suffix = suffix.lower() if suffix else ".bin"
     if not clean_suffix.startswith("."):
@@ -655,7 +673,7 @@ def normalize_extracted_text(text: str, max_chars: int = 200000) -> str:
 
 def extracted_markdown_path(vault: Path, source_label: str, title: str, text: str) -> Path:
     digest = hashlib.sha256(f"{source_label}\n{text}".encode("utf-8", errors="ignore")).hexdigest()[:12]
-    root = vault / "raw" / "sources" / "extracted"
+    root = vpath(vault, "raw/sources/extracted")
     root.mkdir(parents=True, exist_ok=True)
     return root / f"{slugify(title or source_label)[:80]}-{digest}.md"
 
@@ -692,7 +710,7 @@ def write_extracted_markdown(vault: Path, source_label: str, kind: str, title: s
 
 
 def evidence_index_path(vault: Path) -> Path:
-    return vault / "evidence" / "index.jsonl"
+    return vpath(vault, "evidence/index.jsonl")
 
 
 def timestamp_seconds(stamp: str) -> int:
@@ -925,7 +943,7 @@ def ocr_image(path: Path, languages: str = "eng+kor") -> tuple[str, str | None]:
 
 
 def frame_asset_root(vault: Path, run_id: str) -> Path:
-    root = vault / "raw" / "figures" / "video-frames" / run_id
+    root = vpath(vault, "raw/figures/video-frames") / run_id
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -1064,7 +1082,7 @@ def analyze_frames(vault: Path, frames: list[Path], run_id: str, ocr: bool = Fal
                 item["ocr_warning"] = warning
                 warnings.append(f"{rel}: {warning}")
         results.append(item)
-    manifest = vault / "swarmvault" / "exports" / "video-frames" / f"{run_id}.json"
+    manifest = vpath(vault, "swarmvault/exports/video-frames") / f"{run_id}.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(json.dumps({"run_id": run_id, "frames": results, "warnings": warnings}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return results, warnings
@@ -1144,7 +1162,7 @@ def video_frames_command(
         "frames_dir": root.relative_to(vault).as_posix(),
         "frames": len(frame_records),
         "source_markdown": source_markdown.relative_to(vault).as_posix(),
-        "manifest": (vault / "swarmvault" / "exports" / "video-frames" / f"{run_id}.json").relative_to(vault).as_posix(),
+        "manifest": (vpath(vault, "swarmvault/exports/video-frames") / f"{run_id}.json").relative_to(vault).as_posix(),
         "original": original,
         "evidence_index": evidence_index_path(vault).relative_to(vault).as_posix(),
         "warnings": warnings,
@@ -1465,7 +1483,7 @@ def fetch_web_content(url: str) -> tuple[bytes, str, list[str]]:
 def save_downloaded_pdf(vault: Path, url: str, body: bytes) -> Path:
     digest = hashlib.sha256(body).hexdigest()[:12]
     name = slugify(Path(urllib.parse.urlparse(url).path).stem or urllib.parse.urlparse(url).netloc or "download")
-    root = vault / "raw" / "sources" / "downloads"
+    root = vpath(vault, "raw/sources/downloads")
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"{name}-{digest}.pdf"
     if not path.exists():
@@ -1884,7 +1902,7 @@ def extract_sources(vault: Path, sources: list[str]) -> dict:
 
 
 def research_profile_path(vault: Path) -> Path:
-    return vault / "wiki" / "research-profile.md"
+    return vpath(vault, "wiki/research-profile.md")
 
 
 def parse_research_profile(vault: Path) -> dict:
@@ -1990,7 +2008,7 @@ def write_stable_synthesis_update(
     evidence: dict,
 ) -> str:
     title = f"Stable Synthesis - {match['title']}"
-    path = vault / "wiki" / "syntheses" / f"stable-{slugify(match['title'])}.md"
+    path = vpath(vault, "wiki/syntheses") / f"stable-{slugify(match['title'])}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     update_lines = [
         f"## Promoted Update {now_iso()}",
@@ -2056,13 +2074,13 @@ def append_auto_synthesis_update(
     evidence: dict,
 ) -> dict:
     title = f"Auto Synthesis - {match['title']}"
-    path = vault / "wiki" / "syntheses" / f"auto-{slugify(match['title'])}.md"
+    path = vpath(vault, "wiki/syntheses") / f"auto-{slugify(match['title'])}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     profile_rel = research_profile_path(vault).relative_to(vault).as_posix()
     related_terms = [
         f"[[{titleize_slug(term)}]]"
         for term in match.get("matched_terms", [])[:3]
-        if (vault / "wiki" / "concepts" / f"{slugify(term)}.md").exists()
+        if (vpath(vault, "wiki/concepts") / f"{slugify(term)}.md").exists()
     ]
     related = " ".join([f"[[{source_title}]]", "[[Research Profile]]", *related_terms])
     update_lines = [
@@ -2234,7 +2252,7 @@ def ingest_sources(
         evidence_record_count = prepared.get("evidence_records") or len(linked_evidence)
         original_ref = original.get("path") or original.get("source_url") or original.get("source") or ""
         evidence_index_rel = evidence_index_path(vault).relative_to(vault).as_posix() if evidence_record_count else ""
-        source_note = vault / "wiki" / "sources" / f"{slugify(raw_path.stem)}.md"
+        source_note = vpath(vault, "wiki/sources") / f"{slugify(raw_path.stem)}.md"
         terms = extract_terms(text)
         summary = summarize_text(text)
         term_links = " ".join(f"[[{titleize_slug(term)}]]" for term in terms[:8])
@@ -2292,7 +2310,7 @@ def ingest_sources(
         concept_pages = []
         for term in terms[:8]:
             concept_title = titleize_slug(term)
-            concept_path = vault / "wiki" / "concepts" / f"{slugify(term)}.md"
+            concept_path = vpath(vault, "wiki/concepts") / f"{slugify(term)}.md"
             if not concept_path.exists():
                 concept_path.parent.mkdir(parents=True, exist_ok=True)
                 concept_path.write_text(
@@ -2365,7 +2383,7 @@ def ingest_sources(
         ingested.append({"source": source_rel, "source_note": page_rel, "concept_pages": concept_pages, "original": jsonable(original) if original else None, "evidence_index": evidence_index_rel or None, "evidence_records": evidence_record_count})
 
         original_path = prepared.get("original_path")
-        if move and isinstance(original_path, Path) and original_path.exists() and not original_path.resolve().is_relative_to((vault / "raw").resolve()):
+        if move and isinstance(original_path, Path) and original_path.exists() and not layout.path_is_relative_to(original_path, vpath(vault, "raw")):
             original_path.unlink()
 
     manifest["generated_pages"] = sorted(set(manifest.get("generated_pages", [])))
@@ -2373,9 +2391,12 @@ def ingest_sources(
     return {"ingested": ingested, "skipped": skipped, "extracted": extracted, "auto_syntheses": auto_syntheses}
 
 
-def graph_view_filter(view: str) -> str:
+def graph_view_filter(vault: Path, view: str) -> str:
     if view == "semantic":
-        return "-path:wiki/index.md -path:wiki/log.md -path:wiki/overview.md -path:wiki/concepts"
+        return " ".join(
+            f"-path:{vactual(vault, rel)}"
+            for rel in ("wiki/index.md", "wiki/log.md", "wiki/overview.md", "wiki/concepts")
+        )
     return ""
 
 
@@ -2415,7 +2436,7 @@ def write_obsidian_graph_filter(vault: Path, view: str) -> dict:
         data = json.loads(graph_config.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {"updated": False, "reason": "invalid_obsidian_graph_config"}
-    data["search"] = graph_view_filter(view)
+    data["search"] = graph_view_filter(vault, view)
     if view == "semantic":
         data["showOrphans"] = False
     graph_config.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -2430,11 +2451,12 @@ def build_graph(vault: Path, view: str = "full", write_obsidian_filter: bool = F
 
     for path in files:
         rel = path.relative_to(vault).as_posix()
+        logical_rel = vlogical(vault, path)
         for alias in page_aliases(path):
             title_to_id[alias] = rel
-        if graph_include(rel, view):
+        if graph_include(logical_rel, view):
             title = path.stem
-            nodes[rel] = {"id": rel, "title": title, "path": rel, "kind": graph_page_kind(rel)}
+            nodes[rel] = {"id": rel, "title": title, "path": rel, "kind": graph_page_kind(logical_rel)}
 
     for path in files:
         source = path.relative_to(vault).as_posix()
@@ -2453,7 +2475,7 @@ def build_graph(vault: Path, view: str = "full", write_obsidian_filter: bool = F
     graph = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "view": view,
-        "filter": graph_view_filter(view),
+        "filter": graph_view_filter(vault, view),
         "node_count": len(nodes),
         "edge_count": len(edges),
         "nodes": list(nodes.values()),
@@ -2462,8 +2484,8 @@ def build_graph(vault: Path, view: str = "full", write_obsidian_filter: bool = F
     if write_obsidian_filter:
         graph["obsidian_graph_filter"] = write_obsidian_graph_filter(vault, view)
 
-    state = vault / "swarmvault" / "state"
-    exports = vault / "swarmvault" / "exports"
+    state = vpath(vault, "swarmvault/state")
+    exports = vpath(vault, "swarmvault/exports")
     state.mkdir(parents=True, exist_ok=True)
     exports.mkdir(parents=True, exist_ok=True)
     suffix = "" if view == "full" else f"-{view}"
@@ -2491,7 +2513,7 @@ def build_context(vault: Path, query: str, limit: int = 8, max_chars: int = 1200
     selected = []
     seen_paths = set()
     for item in search["results"]:
-        path = vault / item["path"]
+        path = vault_relative_path(vault, item["path"])
         rel = item["path"]
         if path.exists() and is_retrieval_page(path) and rel not in seen_paths:
             selected.append((item["score"], path, path.read_text(encoding="utf-8", errors="ignore")))
@@ -2499,7 +2521,7 @@ def build_context(vault: Path, query: str, limit: int = 8, max_chars: int = 1200
         if len(selected) >= limit:
             break
 
-    out_dir = vault / "swarmvault" / "context-packs"
+    out_dir = vpath(vault, "swarmvault/context-packs")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{slugify(query)[:80]}.md"
 
@@ -2525,12 +2547,12 @@ def build_context(vault: Path, query: str, limit: int = 8, max_chars: int = 1200
 def record_task(vault: Path, status: str, title: str, note: str = "", target: str = "") -> Path:
     now = datetime.now(timezone.utc).isoformat()
     record = {"time": now, "status": status, "title": title, "target": target, "note": note}
-    ledger = vault / "swarmvault" / "task-ledger"
+    ledger = vpath(vault, "swarmvault/task-ledger")
     ledger.mkdir(parents=True, exist_ok=True)
     with (ledger / "tasks.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    task_dir = vault / "wiki" / "tasks"
+    task_dir = vpath(vault, "wiki/tasks")
     task_dir.mkdir(parents=True, exist_ok=True)
     task_path = task_dir / f"{slugify(title)}.md"
     if not task_path.exists():
@@ -2547,7 +2569,7 @@ def record_task(vault: Path, status: str, title: str, note: str = "", target: st
 
 def file_back(vault: Path, title: str, body: str, folder: str = "wiki/syntheses") -> Path:
     vault = vault.expanduser()
-    folder_path = vault / folder
+    folder_path = vpath(vault, folder)
     folder_path.mkdir(parents=True, exist_ok=True)
     page_path = folder_path / f"{slugify(title)}.md"
     if page_path.exists():
@@ -2621,7 +2643,7 @@ def quality_score(page: Path, source_text: str | None = None, consistency: float
 
 def run_quality(vault: Path, pages: list[str], strict: bool = False, consistency: float | None = None, suggestions: float | None = None, coverage: float | None = None) -> dict:
     vault = vault.expanduser()
-    selected = [vault / page for page in pages] if pages else [p for p in markdown_files(vault) if is_retrieval_page(p)]
+    selected = [vault_relative_path(vault, page) for page in pages] if pages else [p for p in markdown_files(vault) if is_retrieval_page(p)]
     results = []
     for page in selected:
         if page.exists() and page.is_file():
@@ -2634,7 +2656,7 @@ def run_quality(vault: Path, pages: list[str], strict: bool = False, consistency
         "results": results,
         "average_score": round(sum(item.get("lint_score", 0.0) for item in results) / max(len(results), 1), 3),
     }
-    out = vault / "swarmvault" / "exports" / "quality-report.json"
+    out = vpath(vault, "swarmvault/exports") / "quality-report.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
@@ -2644,7 +2666,10 @@ def vault_relative_path(vault: Path, value: str) -> Path:
     path = Path(value).expanduser()
     if path.is_absolute():
         return path
-    return vault.expanduser() / path
+    direct = vault.expanduser() / path
+    if direct.exists():
+        return direct
+    return vpath(vault.expanduser(), value)
 
 
 def extract_sections(content: str) -> dict[str, str]:
@@ -2713,7 +2738,7 @@ def section_diff(existing: Path, new: Path) -> dict:
 
 
 def state_path(vault: Path) -> Path:
-    return vault / "swarmvault" / "state" / "pipeline-state.json"
+    return vpath(vault, "swarmvault/state") / "pipeline-state.json"
 
 
 def load_state(vault: Path) -> dict:
@@ -2796,7 +2821,7 @@ def link_audit(vault: Path) -> dict:
         "hubs": sorted([page for page, links in outgoing.items() if len(links) + len(incoming.get(page, set())) >= 10]),
         "one_way_links": one_way,
     }
-    out = vault.expanduser() / "swarmvault" / "exports" / "link-audit.json"
+    out = vpath(vault.expanduser(), "swarmvault/exports") / "link-audit.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
@@ -2809,7 +2834,7 @@ def page_terms(page: Path) -> set[str]:
 
 def link_strengthen(vault: Path, page_rel: str, max_links: int = 5, backlink: bool = False) -> dict:
     vault = vault.expanduser()
-    page = vault / page_rel
+    page = vault_relative_path(vault, page_rel)
     if not page.exists():
         return {"error": "FILE_NOT_FOUND", "page": page_rel}
     target_terms = page_terms(page)
@@ -2844,7 +2869,7 @@ def link_strengthen(vault: Path, page_rel: str, max_links: int = 5, backlink: bo
         "links_added": [{"page": other.relative_to(vault).as_posix(), "score": score, "overlap": overlap} for score, other, overlap in selected],
         "backlink": backlink,
     }
-    out = vault / "swarmvault" / "exports" / "link-strengthen.json"
+    out = vpath(vault, "swarmvault/exports") / "link-strengthen.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
@@ -2947,7 +2972,7 @@ def graphify_import(vault: Path, graph_json: Path, run_id: str | None = None, re
     data = json.loads(graph_json.read_text(encoding="utf-8"))
     nodes, edges = normalize_graphify_graph(data)
     run_id = slugify(run_id or f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{graph_json.parent.name or graph_json.stem}")
-    import_root = vault / "graph_imports" / run_id
+    import_root = vpath(vault, "graph_imports") / run_id
     node_root = import_root / "nodes"
     node_root.mkdir(parents=True, exist_ok=True)
 
@@ -3039,8 +3064,8 @@ def graphify_import(vault: Path, graph_json: Path, run_id: str | None = None, re
         encoding="utf-8",
     )
 
-    cache_root = vault / "swarmvault" / "cache" / "graphify" / run_id
-    export_root = vault / "swarmvault" / "exports" / "graphify" / run_id
+    cache_root = vpath(vault, "swarmvault/cache") / "graphify" / run_id
+    export_root = vpath(vault, "swarmvault/exports") / "graphify" / run_id
     cache_root.mkdir(parents=True, exist_ok=True)
     export_root.mkdir(parents=True, exist_ok=True)
     shutil.copy2(graph_json, cache_root / "graph.json")
@@ -3059,9 +3084,9 @@ def graphify_import(vault: Path, graph_json: Path, run_id: str | None = None, re
 def cache_clean(vault: Path, max_age_days: int = 30, keep_latest: int = 10, dry_run: bool = False, include_exports: bool = False) -> dict:
     vault = vault.expanduser()
     cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-    roots = [vault / "swarmvault" / "cache"]
+    roots = [vpath(vault, "swarmvault/cache")]
     if include_exports:
-        roots.append(vault / "swarmvault" / "exports" / "graphify")
+        roots.append(vpath(vault, "swarmvault/exports") / "graphify")
     removed = []
     kept = []
 
@@ -3093,7 +3118,7 @@ def cache_clean(vault: Path, max_age_days: int = 30, keep_latest: int = 10, dry_
 
 
 def maintenance_state_path(vault: Path) -> Path:
-    return vault / "swarmvault" / "state" / "maintenance-state.json"
+    return vpath(vault, "swarmvault/state") / "maintenance-state.json"
 
 
 def load_maintenance_state(vault: Path) -> dict:
@@ -3116,7 +3141,7 @@ def count_sources_for_maintenance(vault: Path, manifest: dict) -> int:
     sources = manifest.get("sources", [])
     if sources:
         return len(sources)
-    source_dir = vault / "wiki" / "sources"
+    source_dir = vpath(vault, "wiki/sources")
     return len(list(source_dir.glob("*.md"))) if source_dir.exists() else 0
 
 
@@ -3143,8 +3168,8 @@ def summarize_link_audit(report: dict) -> dict:
 
 
 def graphify_next_steps(vault: Path, graphify_needed: bool, graphify_status: str, threshold: int) -> dict:
-    graphify_input_dir = vault / "raw" / "graphify_articles"
-    graphify_export_dir = vault / "swarmvault" / "exports" / "graphify"
+    graphify_input_dir = vpath(vault, "raw/graphify_articles")
+    graphify_export_dir = vpath(vault, "swarmvault/exports") / "graphify"
     input_files = sorted(p for p in graphify_input_dir.rglob("*") if p.is_file()) if graphify_input_dir.exists() else []
     if graphify_status == "imported":
         return {
@@ -3167,7 +3192,7 @@ def graphify_next_steps(vault: Path, graphify_needed: bool, graphify_status: str
         "summary": "Graphify is recommended, but GHFP does not guess an external Graphify CLI command. Generate graph.json with your chosen Graphify tool, then import it.",
         "input_dir": graphify_input_dir.relative_to(vault).as_posix(),
         "input_files": len(input_files),
-        "fallback_corpus": "wiki/sources",
+        "fallback_corpus": vactual(vault, "wiki/sources"),
         "expected_output_dir": graphify_export_dir.relative_to(vault).as_posix(),
         "next": [
             f"Place or generate the Graphify corpus under `{graphify_input_dir.relative_to(vault).as_posix()}` when using a bulk Graphify workflow.",
@@ -3285,8 +3310,8 @@ def fallback_bullets(text: str, limit: int = 4) -> list[str]:
 
 
 def card_path(vault: Path, kind: str, title: str) -> Path:
-    folder = {"paper": "papers", "experiment": "experiments", "strategy": "strategies"}[kind]
-    root = vault / "wiki" / "cards" / folder
+    folder = {"paper": "wiki/cards/papers", "experiment": "wiki/cards/experiments", "strategy": "wiki/cards/strategies"}[kind]
+    root = vpath(vault, folder)
     root.mkdir(parents=True, exist_ok=True)
     return root / f"{slugify(title)[:90]}.md"
 
@@ -3351,11 +3376,11 @@ def generate_card(vault: Path, page_rel: str, kind: str) -> dict:
 def card_command(vault: Path, kind: str, pages: list[str], all_sources: bool = False) -> dict:
     vault = vault.expanduser()
     if all_sources:
-        selected = [p.relative_to(vault).as_posix() for p in markdown_files(vault) if p.as_posix().find("/wiki/sources/") >= 0]
+        selected = [p.relative_to(vault).as_posix() for p in markdown_files(vault) if vlogical(vault, p).startswith("wiki/sources/")]
     else:
         selected = pages
     results = [generate_card(vault, page, kind) for page in selected]
-    out = vault / "swarmvault" / "exports" / f"{kind}-card-report.json"
+    out = vpath(vault, "swarmvault/exports") / f"{kind}-card-report.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     report = {"kind": kind, "count": len(results), "results": results}
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -3402,7 +3427,7 @@ def chunk_page(vault: Path, page: Path, max_chars: int = 1200) -> list[dict]:
 
 
 def index_paths(vault: Path) -> tuple[Path, Path]:
-    root = vault / "swarmvault" / "state" / "hybrid-index"
+    root = vpath(vault, "swarmvault/state/hybrid-index")
     root.mkdir(parents=True, exist_ok=True)
     return root / "chunks.jsonl", root / "vectors.sqlite"
 
@@ -3458,14 +3483,14 @@ def hybrid_search(vault: Path, query: str, limit: int = 10) -> dict:
         haystack = f"{chunk['title']} {chunk['section']} {chunk['text']}".lower()
         keyword = sum(haystack.count(term) for term in query_terms)
         vector = cosine(query_vec, hashed_vector(haystack))
-        card_boost = 0.35 if "/cards/" in chunk["path"] else 0.0
+        card_boost = 0.35 if "/cards/" in layout.to_logical_rel(vault, vault / chunk["path"]) else 0.0
         graph_boost = min(len(WIKILINK_RE.findall(chunk["text"])) * 0.03, 0.3)
         score = keyword + vector * 3.0 + card_boost + graph_boost
         if score > 0:
             scored.append({"score": round(score, 4), "keyword": keyword, "vector": round(vector, 4), "graph": round(graph_boost, 4), "card_boost": card_boost, **chunk})
     scored.sort(key=lambda item: (-item["score"], item["path"], item["chunk_id"]))
     results = scored[:limit]
-    out = vault / "swarmvault" / "exports" / "search-report.json"
+    out = vpath(vault, "swarmvault/exports") / "search-report.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     report = {"query": query, "limit": limit, "results": results}
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -3504,7 +3529,7 @@ def insight_command(vault: Path, kind: str, query: str, limit: int = 8) -> dict:
     results = search["results"]
     evaluation = evaluate_evidence(kind, results)
     title = f"{kind.title()} Insight - {query[:80]}"
-    out = vault / "wiki" / "syntheses" / f"{slugify(title)[:100]}.md"
+    out = vpath(vault, "wiki/syntheses") / f"{slugify(title)[:100]}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         frontmatter_block({"tags": [f"ghpf/insight/{kind}"], "source": "hybrid-search", "created": now_iso(), "aliases": [title]}).rstrip(),
@@ -3539,7 +3564,7 @@ def evaluate_command(vault: Path, kind: str, target: str) -> dict:
         return {"target": target, "error": "FILE_NOT_FOUND"}
     content = path.read_text(encoding="utf-8", errors="ignore")
     result = evaluate_evidence(kind, [{"path": path.relative_to(vault).as_posix(), "text": content}])
-    out = vault / "swarmvault" / "evaluations" / f"{slugify(path.stem)}-{kind}.json"
+    out = vpath(vault, "swarmvault/evaluations") / f"{slugify(path.stem)}-{kind}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     report = {"target": path.relative_to(vault).as_posix(), "kind": kind, **result}
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -3582,7 +3607,7 @@ def figure_panels(domain: str) -> list[dict]:
 
 
 def figure_card_path(vault: Path, title: str) -> Path:
-    root = vault / "wiki" / "cards" / "figures"
+    root = vpath(vault, "wiki/cards/figures")
     root.mkdir(parents=True, exist_ok=True)
     return root / f"{slugify(title)[:90]}.md"
 
@@ -3646,10 +3671,10 @@ def generate_figure_card(vault: Path, page_rel: str, domain: str = "auto") -> di
 
 def figure_card_command(vault: Path, pages: list[str], domain: str = "auto", all_sources: bool = False) -> dict:
     vault = vault.expanduser()
-    selected = [p.relative_to(vault).as_posix() for p in markdown_files(vault) if "/wiki/sources/" in p.as_posix()] if all_sources else pages
+    selected = [p.relative_to(vault).as_posix() for p in markdown_files(vault) if vlogical(vault, p).startswith("wiki/sources/")] if all_sources else pages
     results = [generate_figure_card(vault, page, domain=domain) for page in selected]
     report = {"domain": domain, "count": len(results), "results": results}
-    out = vault / "swarmvault" / "exports" / "figure-card-report.json"
+    out = vpath(vault, "swarmvault/exports") / "figure-card-report.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
@@ -3676,7 +3701,7 @@ def figure_insight_command(vault: Path, query: str, domain: str = "auto", data_s
     search = hybrid_search(vault, f"{query} figure chart panel design {resolved_domain}", limit=limit)
     panels = figure_panels(resolved_domain)
     title = f"Figure Design - {query[:80]}"
-    out = vault / "wiki" / "figure-designs" / f"{slugify(title)[:100]}.md"
+    out = vpath(vault, "wiki/figure-designs") / f"{slugify(title)[:100]}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         frontmatter_block({"tags": ["ghpf/figure-design", f"ghpf/figure/{resolved_domain}"], "source": "figure-insight", "created": now_iso(), "aliases": [title]}).rstrip(),
@@ -3863,7 +3888,7 @@ def figure_export_command(vault: Path, design: str | None, domain: str = "auto",
             design_text = design_path.read_text(encoding="utf-8", errors="ignore")
     resolved_domain = infer_figure_domain(f"{domain} {design_text}", fallback="generic") if domain == "auto" else domain
     figure_name = slugify(name).replace("-", "_") or "Figure_1"
-    out_dir = vault / "swarmvault" / "exports" / "figures" / figure_name
+    out_dir = vpath(vault, "swarmvault/exports/figures") / figure_name
     out_dir.mkdir(parents=True, exist_ok=True)
     script_path = out_dir / "figure.py"
     script_path.write_text(matplotlib_script(resolved_domain, figure_name), encoding="utf-8")
@@ -3907,15 +3932,18 @@ def lint_wiki(vault: Path) -> dict:
 
     for page in pages:
         rel = page.relative_to(vault).as_posix()
+        logical_rel = vlogical(vault, page)
         if not is_retrieval_page(page):
             continue
-        if page.stem.lower() not in linked_targets and rel != "wiki/index.md":
+        if page.stem.lower() not in linked_targets and logical_rel != "wiki/index.md":
             orphan_pages.append(rel)
 
-    index_path = vault / "wiki" / "index.md"
+    index_path = vpath(vault, "wiki/index.md")
     index_text = index_path.read_text(encoding="utf-8", errors="ignore") if index_path.exists() else ""
-    for rel in sorted(page_rels):
-        if rel.startswith("wiki/") and rel not in index_text and is_retrieval_page(Path(rel)):
+    for page in pages:
+        rel = page.relative_to(vault).as_posix()
+        logical_rel = vlogical(vault, page)
+        if logical_rel.startswith("wiki/") and rel not in index_text and is_retrieval_page(page):
             index_missing.append(rel)
 
     manifest = load_manifest(vault)
@@ -3924,7 +3952,7 @@ def lint_wiki(vault: Path) -> dict:
             manifest_missing.append(rel)
 
     required = ["raw", "wiki", "schema", "schema/AGENTS.md", "wiki/index.md", "wiki/log.md", "wiki/manifest.json"]
-    missing_required = [item for item in required if not (vault / item).exists()]
+    missing_required = [item for item in required if not vpath(vault, item).exists()]
     compatibility = {
         "root_index": (vault / "index.md").exists(),
         "root_log": (vault / "log.md").exists(),
@@ -3941,7 +3969,7 @@ def lint_wiki(vault: Path) -> dict:
         "compatibility": compatibility,
         "quality": run_quality(vault, [p.relative_to(vault).as_posix() for p in pages if is_retrieval_page(p)], strict=False),
     }
-    report_path = vault / "swarmvault" / "exports" / "lint-report.json"
+    report_path = vpath(vault, "swarmvault/exports") / "lint-report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
@@ -3967,16 +3995,17 @@ def doctor(vault: Path) -> dict:
     return {
         "vault": str(vault),
         "resolved_vault": str(vault.resolve()),
+        "layout_scheme": config.get("layout_scheme") if isinstance(config, dict) else None,
         "has_obsidian_config": (vault / ".obsidian").is_dir(),
         "nested_obsidian_vaults": [str(path) for path in nested_obsidian_vaults],
-        "has_raw": (vault / "_raw").exists(),
-        "has_karpathy_raw": (vault / "raw").exists(),
-        "has_graphify_raw": (vault / "raw" / "graphify_articles").exists(),
-        "has_wiki": (vault / "wiki").exists(),
-        "has_graph_imports": (vault / "graph_imports").exists(),
-        "has_schema": (vault / "schema" / "AGENTS.md").exists(),
-        "has_sidecar": (vault / "swarmvault").exists(),
-        "has_cache": (vault / "swarmvault" / "cache").exists(),
+        "has_raw": vpath(vault, "_raw").exists(),
+        "has_karpathy_raw": vpath(vault, "raw").exists(),
+        "has_graphify_raw": vpath(vault, "raw/graphify_articles").exists(),
+        "has_wiki": vpath(vault, "wiki").exists(),
+        "has_graph_imports": vpath(vault, "graph_imports").exists(),
+        "has_schema": vpath(vault, "schema/AGENTS.md").exists(),
+        "has_sidecar": vpath(vault, "swarmvault").exists(),
+        "has_cache": vpath(vault, "swarmvault/cache").exists(),
         "markdown_pages": len(markdown_files(vault)),
         "reference_markdown_pages": len(reference_markdown_files(vault)),
         "has_config": (vault / "ghpf.config.json").exists(),
@@ -4226,7 +4255,7 @@ def main() -> int:
     elif args.command == "diff":
         vault = Path(args.vault)
         report = section_diff(vault_relative_path(vault, args.existing), vault_relative_path(vault, args.new))
-        out = vault.expanduser() / "swarmvault" / "exports" / "section-diff.json"
+        out = vpath(vault.expanduser(), "swarmvault/exports") / "section-diff.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report, ensure_ascii=False, indent=2))

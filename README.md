@@ -4,10 +4,11 @@ Obsidian-first LLM Wiki scaffold for research papers, trading strategy notes, co
 
 The default pattern is:
 
-- **Canonical wiki writer:** Obsidian-style Markdown under `wiki/`
-- **Raw source intake:** `raw/` with `_raw/` compatibility for Obsidian capture tools
-- **Bulk graph reference layer:** Graphify intake in `raw/graphify_articles/` and imported maps under `graph_imports/`
-- **Sidecar intelligence:** SwarmVault-inspired graph, context packs, exports, and task ledger under `swarmvault/`
+- **Decimal Obsidian layout:** numbered physical folders such as `300. wiki/310. sources`
+- **Canonical wiki writer:** logical Obsidian-style Markdown under `wiki/`
+- **Raw source intake:** logical `raw/` with `_raw/` compatibility for Obsidian capture tools
+- **Bulk graph reference layer:** Graphify intake in logical `raw/graphify_articles/` and imported maps under `graph_imports/`
+- **Sidecar intelligence:** SwarmVault-inspired graph, context packs, exports, and task ledger under logical `swarmvault/`
 - **Agent compatibility:** Codex via `AGENTS.md`, Claude Code via `CLAUDE.md`, and Antigravity via `.agent/`
 
 ## Quick Start
@@ -18,7 +19,7 @@ cd ghpf-llm-wiki
 ./install.sh
 ```
 
-`./install.sh` runs the default post-clone flow: create `./my-vault`, install Codex/Claude Code/Antigravity project skills, print capabilities, run lint, and write `my-vault/swarmvault/exports/install-report.json`.
+`./install.sh` runs the default post-clone flow: create `./my-vault` with the decimal folder layout, install Codex/Claude Code/Antigravity project skills, print capabilities, run lint, and write the install report under the configured exports folder.
 
 Manual equivalent:
 
@@ -37,6 +38,26 @@ python3 scripts/ghpf_wiki.py lint --vault ./my-vault
 
 Then open `my-vault/` as an Obsidian vault and ask your agent to use the GHFP wiki workflow.
 
+### Decimal Folder Layout
+
+New vaults default to a Johnny.Decimal-style physical folder layout while preserving stable logical paths for commands and agents.
+
+Examples:
+
+- `001. evidence/` stores the evidence index.
+- `100. graph_imports/` stores imported Graphify reference layers.
+- `200. raw/210. originals/` preserves source artifacts.
+- `300. wiki/310. sources/` stores source notes.
+- `300. wiki/320. concepts/` stores durable concept notes.
+- `300. wiki/340. cards/341. papers/` stores reusable paper cards.
+- `003. swarmvault/090. exports/` stores sidecar reports and exports.
+
+The CLI still accepts logical paths such as `wiki/sources` and resolves them through `ghpf.config.json`. Existing configured vaults keep their current layout when `--layout auto` is used. To force the old unnumbered layout for a new vault, run:
+
+```bash
+python3 scripts/setup_vault.py --vault ./my-vault --profile auto --layout classic
+```
+
 ### Existing Obsidian Vaults
 
 When connecting GHFP to an existing Obsidian vault, pass the folder that directly contains `.obsidian`:
@@ -48,7 +69,7 @@ python3 scripts/ghpf_wiki.py doctor --vault /path/to/your-vault
 
 Do not pass a parent folder that merely contains an Obsidian vault as a child. `setup_vault.py` refuses that case and prints the nested vault path to use instead.
 
-GHFP keeps canonical generated files under `wiki/`, but some Obsidian helpers expect root-level `index.md` and `log.md`. Setup and `index` create compatibility bridge files at the vault root without replacing an existing root `log.md`.
+GHFP keeps canonical generated files under the configured wiki directory, for example `300. wiki/`. Some Obsidian helpers expect root-level `index.md` and `log.md`; setup and `index` create compatibility bridge files at the vault root without replacing an existing root `log.md`.
 
 ## Profiles
 
@@ -224,7 +245,7 @@ python3 scripts/ghpf_wiki.py task finish --vault ./my-vault --title "Test BTC st
 
 ## Design Rule
 
-Keep `wiki/` as the human-readable canonical knowledge base. Use `raw/originals/` for preserved source artifacts, `evidence/index.jsonl` for machine-readable evidence locators, and `graph_imports/` only as an imported Graphify reference layer. Let sidecar tools write only to `raw/originals/`, `evidence/`, `swarmvault/`, `graph_imports/`, `wiki/tasks/`, and explicit exports unless a human asks for canonical wiki edits.
+Keep the configured wiki directory as the human-readable canonical knowledge base. In the decimal layout this is `300. wiki/`; in the classic layout it is `wiki/`. Use the configured originals directory for preserved source artifacts, the configured evidence index for machine-readable evidence locators, and the configured graph imports directory only as an imported Graphify reference layer. Let sidecar tools write only to configured raw/evidence/sidecar/graph/task/export locations unless a human asks for canonical wiki edits.
 
 ## Quality Loop
 

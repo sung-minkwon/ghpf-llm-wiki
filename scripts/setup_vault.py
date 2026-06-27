@@ -14,6 +14,13 @@ REPO_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from detect_profile import detect_profile  # noqa: E402
+from vault_layout import (  # noqa: E402
+    DEFAULT_LAYOUT_SCHEME,
+    actual_rel_for,
+    config_for_layout,
+    load_vault_config,
+    resolve_vault_path,
+)
 
 
 def load_profile(profile: str) -> dict:
@@ -32,8 +39,19 @@ def write_if_missing(path: Path, content: str, force: bool = False) -> bool:
     return True
 
 
-def ensure_index_entry(vault: Path, title: str, page_rel: str) -> None:
-    index_path = vault / "wiki" / "index.md"
+def select_layout(vault: Path, requested: str) -> str:
+    if requested != "auto":
+        return requested
+    existing = load_vault_config(vault)
+    if existing.get("layout_scheme"):
+        return str(existing["layout_scheme"])
+    if existing:
+        return "classic"
+    return DEFAULT_LAYOUT_SCHEME
+
+
+def ensure_index_entry(vault: Path, layout_config: dict, title: str, page_rel: str) -> None:
+    index_path = resolve_vault_path(vault, "wiki/index.md", config=layout_config)
     if not index_path.exists():
         return
     text = index_path.read_text(encoding="utf-8")
@@ -45,50 +63,59 @@ def ensure_index_entry(vault: Path, title: str, page_rel: str) -> None:
             handle.write(entry + "\n")
 
 
-def root_index_bridge_content() -> str:
-    return """<!-- GHFP_ROOT_INDEX_BRIDGE -->
+def root_index_bridge_content(
+    index_rel: str = "wiki/index.md",
+    log_rel: str = "wiki/log.md",
+    manifest_rel: str = "wiki/manifest.json",
+    profile_rel: str = "wiki/research-profile.md",
+) -> str:
+    return f"""<!-- GHFP_ROOT_INDEX_BRIDGE -->
 # GHFP LLM Wiki Root Index
 
 This root file exists for compatibility with Obsidian helpers that expect `index.md` at the vault root.
 
 Canonical GHFP files:
 
-- [wiki/index.md](wiki/index.md)
-- [wiki/log.md](wiki/log.md)
-- [wiki/manifest.json](wiki/manifest.json)
-- [wiki/research-profile.md](wiki/research-profile.md)
+- [{index_rel}]({index_rel})
+- [{log_rel}]({log_rel})
+- [{manifest_rel}]({manifest_rel})
+- [{profile_rel}]({profile_rel})
 
-Use `wiki/index.md` as the canonical generated index. This bridge intentionally uses Markdown links instead of wikilinks so it does not add noisy graph edges.
+Use `{index_rel}` as the canonical generated index. This bridge intentionally uses Markdown links instead of wikilinks so it does not add noisy graph edges.
 """
 
 
-def root_log_bridge_content() -> str:
-    return """# GHFP LLM Wiki Root Log
+def root_log_bridge_content(log_rel: str = "wiki/log.md") -> str:
+    return f"""# GHFP LLM Wiki Root Log
 
 This root file exists for compatibility with helpers that expect `log.md` at the vault root.
 
-Canonical GHFP log: [wiki/log.md](wiki/log.md)
+Canonical GHFP log: [{log_rel}]({log_rel})
 """
 
 
-def ensure_root_compatibility(vault: Path) -> dict:
+def ensure_root_compatibility(vault: Path, layout_config: dict) -> dict:
     root_index = vault / "index.md"
     root_log = vault / "log.md"
+    index_rel = actual_rel_for(vault, "wiki/index.md", config=layout_config)
+    log_rel = actual_rel_for(vault, "wiki/log.md", config=layout_config)
+    manifest_rel = actual_rel_for(vault, "wiki/manifest.json", config=layout_config)
+    profile_rel = actual_rel_for(vault, "wiki/research-profile.md", config=layout_config)
     created = []
     preserved = []
     if root_index.exists():
         text = root_index.read_text(encoding="utf-8", errors="ignore")
         if "<!-- GHFP_ROOT_INDEX_BRIDGE -->" in text:
-            root_index.write_text(root_index_bridge_content(), encoding="utf-8")
+            root_index.write_text(root_index_bridge_content(index_rel, log_rel, manifest_rel, profile_rel), encoding="utf-8")
         else:
             preserved.append("index.md")
     else:
-        root_index.write_text(root_index_bridge_content(), encoding="utf-8")
+        root_index.write_text(root_index_bridge_content(index_rel, log_rel, manifest_rel, profile_rel), encoding="utf-8")
         created.append("index.md")
     if root_log.exists():
         preserved.append("log.md")
     else:
-        root_log.write_text(root_log_bridge_content(), encoding="utf-8")
+        root_log.write_text(root_log_bridge_content(log_rel), encoding="utf-8")
         created.append("log.md")
     return {"root_index": root_index.exists(), "root_log": root_log.exists(), "created": created, "preserved": sorted(set(preserved))}
 
@@ -131,10 +158,19 @@ def validate_vault_target(vault: Path) -> list[str]:
     return warnings
 
 
-def schema_agents_content(profile: str) -> str:
+def schema_agents_content(profile: str, layout_config: dict) -> str:
+    paths = layout_config.get("layout_paths", {})
+    layout_lines = "\n".join(f"- `{logical}` -> `{actual}`" for logical, actual in sorted(paths.items()))
     return f"""# GHFP Wiki Schema
 
 Profile: `{profile}`
+Layout: `{layout_config.get("layout_scheme", "classic")}`
+
+## Decimal Folder Layout
+
+GHFP commands use logical paths such as `wiki/sources`; the physical Obsidian vault can use numbered folders for stable sorting.
+
+{layout_lines}
 
 ## Canonical Layout
 
@@ -215,9 +251,11 @@ Use this page to teach GHFP what "relevant to my work" means. After this file co
 """
 
 
-def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = False) -> dict:
+def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = False, layout: str = "auto") -> dict:
     vault = vault.expanduser()
     warnings = validate_vault_target(vault)
+    layout = select_layout(vault, layout)
+    layout_config = config_for_layout(layout)
     if profile == "auto":
         detected = detect_profile(sources or [str(vault)])
         profile = detected["profile"]
@@ -227,72 +265,50 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
     spec = load_profile(profile)
     created_dirs = []
     for folder in spec["folders"]:
-        path = vault / folder
+        path = resolve_vault_path(vault, folder, config=layout_config)
         path.mkdir(parents=True, exist_ok=True)
         created_dirs.append(str(path.relative_to(vault)))
     for folder in ("raw", "schema"):
-        path = vault / folder
+        path = resolve_vault_path(vault, folder, config=layout_config)
         path.mkdir(parents=True, exist_ok=True)
         created_dirs.append(str(path.relative_to(vault)))
 
     now = datetime.now(timezone.utc).isoformat()
     write_if_missing(
-        vault / "wiki" / "index.md",
+        resolve_vault_path(vault, "wiki/index.md", config=layout_config),
         f"# GHFP LLM Wiki Index\n\nProfile: `{profile}`\n\n## Core Areas\n\n",
         force=force,
     )
     write_if_missing(
-        vault / "wiki" / "log.md",
+        resolve_vault_path(vault, "wiki/log.md", config=layout_config),
         f"# GHFP LLM Wiki Log\n\n- {now}: initialized profile `{profile}`.\n",
         force=False,
     )
     write_if_missing(
-        vault / "wiki" / "overview.md",
+        resolve_vault_path(vault, "wiki/overview.md", config=layout_config),
         "# GHFP LLM Wiki Overview\n\nSummarize the living knowledge base here.\n",
         force=False,
     )
-    write_if_missing(vault / "wiki" / "research-profile.md", research_profile_content(profile), force=False)
-    ensure_index_entry(vault, "Research Profile", "wiki/research-profile.md")
+    write_if_missing(resolve_vault_path(vault, "wiki/research-profile.md", config=layout_config), research_profile_content(profile), force=False)
+    ensure_index_entry(vault, layout_config, "Research Profile", actual_rel_for(vault, "wiki/research-profile.md", config=layout_config))
     write_if_missing(
-        vault / "wiki" / "manifest.json",
+        resolve_vault_path(vault, "wiki/manifest.json", config=layout_config),
         json.dumps({"sources": [], "generated_pages": [], "operations": []}, ensure_ascii=False, indent=2) + "\n",
         force=False,
     )
-    write_if_missing(vault / "schema" / "AGENTS.md", schema_agents_content(profile), force=force)
-    root_compatibility = ensure_root_compatibility(vault)
+    write_if_missing(resolve_vault_path(vault, "schema/AGENTS.md", config=layout_config), schema_agents_content(profile, layout_config), force=force)
+    root_compatibility = ensure_root_compatibility(vault, layout_config)
+    config_payload = {
+        "profile": profile,
+        "profile_description": spec["description"],
+        "vault_root": str(vault.resolve()),
+        **layout_config,
+        "cache_policy": {"max_age_days": 30, "keep_latest": 10},
+        "created_at": now,
+    }
     write_if_missing(
         vault / "ghpf.config.json",
-        json.dumps(
-            {
-                "profile": profile,
-                "profile_description": spec["description"],
-                "vault_root": str(vault.resolve()),
-                "raw_dir": "raw",
-                "originals_dir": "raw/originals",
-                "evidence_dir": "evidence",
-                "evidence_index": "evidence/index.jsonl",
-                "figures_raw_dir": "raw/figures",
-                "video_frames_raw_dir": "raw/figures/video-frames",
-                "graphify_raw_dir": "raw/graphify_articles",
-                "capture_dir": "_raw",
-                "wiki_dir": "wiki",
-                "cards_dir": "wiki/cards",
-                "figure_cards_dir": "wiki/cards/figures",
-                "figure_designs_dir": "wiki/figure-designs",
-                "graph_imports_dir": "graph_imports",
-                "schema_dir": "schema",
-                "sidecar_dir": "swarmvault",
-                "hybrid_index_dir": "swarmvault/state/hybrid-index",
-                "evaluations_dir": "swarmvault/evaluations",
-                "figure_exports_dir": "swarmvault/exports/figures",
-                "video_frame_exports_dir": "swarmvault/exports/video-frames",
-                "cache_dir": "swarmvault/cache",
-                "cache_policy": {"max_age_days": 30, "keep_latest": 10},
-                "created_at": now,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
+        json.dumps(config_payload, ensure_ascii=False, indent=2)
         + "\n",
         force=force,
     )
@@ -300,6 +316,7 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
     return {
         "vault": str(vault),
         "profile": profile,
+        "layout": layout,
         "detected": detected,
         "created_dirs": created_dirs,
         "root_compatibility": root_compatibility,
@@ -317,15 +334,17 @@ def main() -> int:
         choices=["auto", "general", "research", "trading", "codebase", "mixed"],
     )
     parser.add_argument("--force", action="store_true", help="Overwrite generated index/config files.")
+    parser.add_argument("--layout", choices=["auto", "decimal", "classic"], default="auto", help="Folder layout. New vaults default to decimal; existing configured vaults keep their layout.")
     parser.add_argument("--json", action="store_true", help="Print JSON result.")
     args = parser.parse_args()
 
-    result = setup_vault(Path(args.vault).expanduser(), args.profile, args.source, force=args.force)
+    result = setup_vault(Path(args.vault).expanduser(), args.profile, args.source, force=args.force, layout=args.layout)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print(f"vault: {result['vault']}")
         print(f"profile: {result['profile']}")
+        print(f"layout: {result['layout']}")
         print(f"created_dirs: {len(result['created_dirs'])}")
         for warning in result.get("warnings", []):
             print(f"warning: {warning}", file=sys.stderr)

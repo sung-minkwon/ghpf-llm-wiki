@@ -5,17 +5,18 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 ## Operating Rules
 
 - For a fresh clone, run `./install.sh` first. It creates `./my-vault`, installs project skills for Codex/Claude Code/Antigravity, checks capabilities, runs lint, and writes an install report.
-- Treat `wiki/` as the canonical, human-readable Markdown wiki.
-- Treat `graph_imports/` as non-canonical Graphify reference material. Promote durable findings into `wiki/` before relying on them as maintained knowledge.
-- Treat `wiki/cards/` as the reusable structure for paper, experiment, and strategy insight work.
-- Treat `wiki/cards/figures/` and `wiki/figure-designs/` as the reusable structure for manuscript, experiment, and trading chart figure design.
-- Treat `raw/originals/` as preserved original source artifacts and `evidence/index.jsonl` as the machine-readable evidence locator index.
-- Treat `raw/figures/video-frames/` as preserved visual evidence sampled from YouTube, local videos, and image files.
+- New vaults use a Johnny.Decimal-style physical layout by default, such as `300. wiki/310. sources`. Commands and docs may still refer to logical paths such as `wiki/sources`; resolve them through `ghpf.config.json` or the GHFP CLI.
+- Treat logical `wiki/` as the canonical, human-readable Markdown wiki.
+- Treat logical `graph_imports/` as non-canonical Graphify reference material. Promote durable findings into `wiki/` before relying on them as maintained knowledge.
+- Treat logical `wiki/cards/` as the reusable structure for paper, experiment, and strategy insight work.
+- Treat logical `wiki/cards/figures/` and `wiki/figure-designs/` as the reusable structure for manuscript, experiment, and trading chart figure design.
+- Treat logical `raw/originals/` as preserved original source artifacts and logical `evidence/index.jsonl` as the machine-readable evidence locator index.
+- Treat logical `raw/figures/video-frames/` as preserved visual evidence sampled from YouTube, local videos, and image files.
 - Use `[[wikilinks]]` for durable cross-references.
-- Put immutable source copies in `raw/`; `_raw/` is supported for Obsidian capture compatibility.
-- Put bulk Graphify intake in `raw/graphify_articles/`; normal `ingest` skips that folder.
-- Keep wiki operating rules in `schema/AGENTS.md`.
-- Put graph, retrieval, context-pack, cache, export, and task-ledger artifacts under `swarmvault/`.
+- Put immutable source copies in logical `raw/`; `_raw/` is supported for Obsidian capture compatibility.
+- Put bulk Graphify intake in logical `raw/graphify_articles/`; normal `ingest` skips that folder.
+- Keep wiki operating rules in logical `schema/AGENTS.md`.
+- Put graph, retrieval, context-pack, cache, export, and task-ledger artifacts under logical `swarmvault/`.
 - Do not rewrite user notes broadly. Merge focused changes and preserve provenance.
 - For setup, run `./install.sh` for the default install or `python3 scripts/setup_vault.py --vault <path> --profile auto` for manual setup.
 - For an existing Obsidian vault, use the folder that directly contains `.obsidian` as `<path>`. If a user gives a parent folder, run `python3 scripts/ghpf_wiki.py doctor --vault <path>` and use the reported nested Obsidian vault path instead of writing to the parent.
@@ -40,11 +41,11 @@ When the user says a short natural-language request such as "이 문서를 LLM W
 1. Detect or select a profile: `research`, `trading`, `codebase`, `mixed`, or `general`.
 2. Create missing vault folders.
 3. Extract PDF, web, local HTML, Office/HWP, YouTube transcript, and video/image frame sources into Markdown when needed.
-4. Ingest sources into concise source notes and update `wiki/manifest.json`.
+4. Ingest sources into concise source notes and update logical `wiki/manifest.json`.
 5. Track the pipeline with `state` so setup, ingest, compile, lint, strengthen, file-back, graph, and context work are not skipped.
 6. Extract durable concepts, entities, methods, strategies, claims, and open questions.
 7. Create `paper`, `experiment`, or `strategy` cards before deep insight work.
-8. Let `ingest` update `wiki/syntheses/auto-*.md` from `wiki/research-profile.md` when focus axes match.
+8. Let `ingest` update logical `wiki/syntheses/auto-*.md` from `wiki/research-profile.md` when focus axes match.
 9. Build `index`, run `search`, and use `insight` for evidence-backed synthesis.
 10. Use `video-frames` before `figure-card`, `figure-insight`, and `figure-export` when the task depends on chart screenshots, slides, or video frames.
 11. Link notes with `[[wikilinks]]`.

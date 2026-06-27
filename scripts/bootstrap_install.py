@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+import vault_layout as layout  # noqa: E402
 
 
 def run_step(name: str, cmd: list[str]) -> dict:
@@ -41,7 +44,7 @@ def print_step(step: dict) -> None:
 
 
 def write_report(vault: Path, report: dict) -> Path:
-    report_path = vault / "swarmvault" / "exports" / "install-report.json"
+    report_path = layout.resolve_vault_path(vault, "swarmvault/exports") / "install-report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report_path
@@ -58,6 +61,7 @@ def main() -> int:
     parser.add_argument("--agents", default="codex,claude,antigravity")
     parser.add_argument("--scope", choices=["project", "user"], default="project")
     parser.add_argument("--force", action="store_true", help="Pass --force to setup_vault.py.")
+    parser.add_argument("--layout", choices=["auto", "decimal", "classic"], default="auto", help="Folder layout passed to setup_vault.py.")
     parser.add_argument("--json", action="store_true", help="Print the final install report as JSON.")
     args = parser.parse_args()
 
@@ -70,6 +74,8 @@ def main() -> int:
         str(vault),
         "--profile",
         args.profile,
+        "--layout",
+        args.layout,
     ]
     if args.force:
         setup_cmd.append("--force")
@@ -111,6 +117,7 @@ def main() -> int:
         "repo_root": str(REPO_ROOT),
         "vault": str(vault),
         "profile": args.profile,
+        "layout": args.layout,
         "agents": [agent.strip() for agent in args.agents.split(",") if agent.strip()],
         "scope": args.scope,
         "ok": all(step["returncode"] == 0 for step in results) and len(results) == len(steps),
