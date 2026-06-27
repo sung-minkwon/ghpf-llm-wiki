@@ -32,9 +32,10 @@ When the user says a short natural-language request such as "이 문서를 LLM W
 2. Resolve the source from the provided attachment/path/URL, or from the only plausible PDF/Office/HTML source in the current working directory. If multiple sources are plausible, ask which one.
 3. Resolve the vault from the user's explicit path, the current project/vault context, an existing `./my-vault`, or create `./my-vault` via `./install.sh` when needed. For an existing Obsidian vault, verify that the selected path directly contains `.obsidian`; if it only contains a nested Obsidian vault, use the nested folder or ask before writing.
 4. Run `python3 scripts/ghpf_wiki.py extract --vault <vault> --ingest <source>` for PDF, web page, local HTML, Office/HWP, or YouTube transcript intake.
-5. If the user explicitly asks for YouTube/video/image visual frames, also run `python3 scripts/ghpf_wiki.py video-frames --vault <vault> --source <source> --ingest --figure-card`.
-6. Run `python3 scripts/ghpf_wiki.py index --vault <vault>` and `python3 scripts/ghpf_wiki.py lint --vault <vault>`.
-7. Report the source note path, preserved original path or source URL, `evidence/index.jsonl`, evidence record count, and lint result.
+5. If `wiki/research-profile.md` exists, `ingest` also files matching candidate updates into `wiki/syntheses/auto-*.md`; report those paths when created and treat them as review candidates, not final conclusions.
+6. If the user explicitly asks for YouTube/video/image visual frames, also run `python3 scripts/ghpf_wiki.py video-frames --vault <vault> --source <source> --ingest --figure-card`.
+7. Run `python3 scripts/ghpf_wiki.py index --vault <vault>` and `python3 scripts/ghpf_wiki.py lint --vault <vault>`.
+8. Report the source note path, preserved original path or source URL, `evidence/index.jsonl`, evidence record count, auto-synthesis paths if any, and lint result.
 
 1. Detect or select a profile: `research`, `trading`, `codebase`, `mixed`, or `general`.
 2. Create missing vault folders.
@@ -43,13 +44,14 @@ When the user says a short natural-language request such as "이 문서를 LLM W
 5. Track the pipeline with `state` so setup, ingest, compile, lint, strengthen, file-back, graph, and context work are not skipped.
 6. Extract durable concepts, entities, methods, strategies, claims, and open questions.
 7. Create `paper`, `experiment`, or `strategy` cards before deep insight work.
-8. Build `index`, run `search`, and use `insight` for evidence-backed synthesis.
-9. Use `video-frames` before `figure-card`, `figure-insight`, and `figure-export` when the task depends on chart screenshots, slides, or video frames.
-10. Link notes with `[[wikilinks]]`.
-11. Run `quality`, `lint`, `link-audit`, and `evaluate`; use `link-strengthen` when a note needs more useful cross-links.
-12. Run `maintenance` for periodic cross-machine cleanup and Graphify threshold checks. Its source-count checkpoint lives in `swarmvault/state/maintenance-state.json`.
-13. For bulk Graphify maps, import `graph.json` into `graph_imports/` and search it as broad context, not as canonical truth.
-14. File reusable query results back into `wiki/syntheses/`, then refresh graph/context packs when the wiki changes.
-15. Prune `swarmvault/cache/` with `cache-clean`; never use cache cleanup to remove `raw/` or `wiki/`.
+8. Let `ingest` update `wiki/syntheses/auto-*.md` from `wiki/research-profile.md` when focus axes match.
+9. Build `index`, run `search`, and use `insight` for evidence-backed synthesis.
+10. Use `video-frames` before `figure-card`, `figure-insight`, and `figure-export` when the task depends on chart screenshots, slides, or video frames.
+11. Link notes with `[[wikilinks]]`.
+12. Run `quality`, `lint`, `link-audit`, and `evaluate`; use `link-strengthen` when a note needs more useful cross-links.
+13. Run `maintenance` for periodic cross-machine cleanup and Graphify threshold checks. Its source-count checkpoint lives in `swarmvault/state/maintenance-state.json`.
+14. For bulk Graphify maps, import `graph.json` into `graph_imports/` and search it as broad context, not as canonical truth.
+15. File reusable query results back into `wiki/syntheses/`, then refresh graph/context packs when the wiki changes.
+16. Prune `swarmvault/cache/` with `cache-clean`; never use cache cleanup to remove `raw/` or `wiki/`.
 
 For Codex, use the skill in `.skills/ghpf-wiki/SKILL.md` when the task mentions GHFP, LLM Wiki, Obsidian wiki, research papers, trading strategy notes, context packs, or agent task memory.

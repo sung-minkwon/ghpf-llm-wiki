@@ -32,6 +32,19 @@ def write_if_missing(path: Path, content: str, force: bool = False) -> bool:
     return True
 
 
+def ensure_index_entry(vault: Path, title: str, page_rel: str) -> None:
+    index_path = vault / "wiki" / "index.md"
+    if not index_path.exists():
+        return
+    text = index_path.read_text(encoding="utf-8")
+    entry = f"- [[{title}]] - `{page_rel}`"
+    if entry not in text:
+        with index_path.open("a", encoding="utf-8") as handle:
+            if not text.endswith("\n"):
+                handle.write("\n")
+            handle.write(entry + "\n")
+
+
 def find_obsidian_vaults(root: Path, max_depth: int = 3) -> list[Path]:
     if not root.exists() or not root.is_dir():
         return []
@@ -115,6 +128,41 @@ Profile: `{profile}`
 13. For figure work, store reusable design evidence in `wiki/cards/figures/` and exported code/output in `swarmvault/exports/figures/`.
 14. For video or image frame work, preserve sampled frames under `raw/figures/video-frames/` and analysis manifests under `swarmvault/exports/video-frames/`.
 15. Use `maintenance` for cross-machine periodic cleanup and Graphify threshold checks. It stores shared state in `swarmvault/state/maintenance-state.json`.
+16. Keep `wiki/research-profile.md` current. When it has focus axes, `ingest` automatically files candidate updates into `wiki/syntheses/auto-*.md`.
+"""
+
+
+def research_profile_content(profile: str) -> str:
+    now = datetime.now(timezone.utc).date().isoformat()
+    return f"""---
+tags: ["ghpf/research-profile"]
+source: "setup-vault"
+created: "{now}"
+aliases: ["Research Profile"]
+---
+
+# Research Profile
+
+Profile: `{profile}`
+
+Use this page to teach GHFP what "relevant to my work" means. After this file contains focus axes, `ingest` automatically appends candidate updates to `wiki/syntheses/auto-*.md`.
+
+## Research Questions
+
+- Main question: replace this with your core research, product, trading, or codebase question.
+- Secondary question: replace this with a second durable question if needed.
+
+## Focus Areas
+
+- Evidence quality: source provenance, direct quotes or evidence pointers, limitations, missing data.
+- Method and workflow: methods, architecture, tools, experiments, benchmarks, evaluation.
+- Reusable insight: claims, design patterns, failure modes, action items, next experiments.
+
+## Auto-Synthesis Rules
+
+- Keep automatic updates as candidates until reviewed.
+- Prefer concrete method, metric, limitation, or decision impact over broad summary.
+- Mark weak or metadata-only evidence as `needs_review`.
 """
 
 
@@ -154,6 +202,8 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
         "# GHFP LLM Wiki Overview\n\nSummarize the living knowledge base here.\n",
         force=False,
     )
+    write_if_missing(vault / "wiki" / "research-profile.md", research_profile_content(profile), force=False)
+    ensure_index_entry(vault, "Research Profile", "wiki/research-profile.md")
     write_if_missing(
         vault / "wiki" / "manifest.json",
         json.dumps({"sources": [], "generated_pages": [], "operations": []}, ensure_ascii=False, indent=2) + "\n",

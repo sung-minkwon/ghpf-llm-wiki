@@ -44,7 +44,7 @@ python3 scripts/ghpf_wiki.py index --vault <path>
 python3 scripts/ghpf_wiki.py lint --vault <path>
 ```
 
-Use the explicit vault if provided; otherwise use the current known vault or `./my-vault` after setup. For existing Obsidian vaults, verify that the path contains `.obsidian`; if `doctor` reports nested Obsidian vaults, use the nested vault folder rather than the parent. For YouTube/video/image visual frames, also use `video-frames --ingest --figure-card` when the user asks for frame/image analysis. Report the created source note, preserved original or source URL, `evidence/index.jsonl`, evidence count, and lint result.
+Use the explicit vault if provided; otherwise use the current known vault or `./my-vault` after setup. For existing Obsidian vaults, verify that the path contains `.obsidian`; if `doctor` reports nested Obsidian vaults, use the nested vault folder rather than the parent. If `wiki/research-profile.md` has focus axes, `ingest` automatically files matching candidate updates into `wiki/syntheses/auto-*.md`; report those paths as review candidates. For YouTube/video/image visual frames, also use `video-frames --ingest --figure-card` when the user asks for frame/image analysis. Report the created source note, preserved original or source URL, `evidence/index.jsonl`, evidence count, auto-synthesis paths if any, and lint result.
 
 For Claude Code slash-command style use, say:
 

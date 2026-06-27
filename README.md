@@ -64,6 +64,8 @@ Example:
 python3 scripts/setup_vault.py --vault ~/obsidian/ghpf --source ~/papers --source ~/trading-notes --profile auto
 ```
 
+Each vault also gets `wiki/research-profile.md`. Edit that page once to define durable focus axes such as your main research question, experiment targets, trading strategy themes, or codebase concerns. After that, `ingest` automatically appends candidate updates to `wiki/syntheses/auto-*.md` when a new source matches the profile. Automatic updates are marked as candidates with confidence, matched terms, evidence snippets, and review notes.
+
 ## Sidecar Commands
 
 Check installed optional capabilities:

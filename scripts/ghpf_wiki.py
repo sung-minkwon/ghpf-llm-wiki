@@ -1626,6 +1626,159 @@ def extract_sources(vault: Path, sources: list[str]) -> dict:
     return {"extracted": extracted, "skipped": skipped}
 
 
+def research_profile_path(vault: Path) -> Path:
+    return vault / "wiki" / "research-profile.md"
+
+
+def parse_research_profile(vault: Path) -> dict:
+    path = research_profile_path(vault)
+    if not path.exists():
+        return {"enabled": False, "reason": "missing_research_profile", "path": path.relative_to(vault).as_posix()}
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    if not content.strip():
+        return {"enabled": False, "reason": "empty_research_profile", "path": path.relative_to(vault).as_posix()}
+
+    axes = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("- "):
+            continue
+        item = stripped[2:].strip()
+        if not item or any(marker in item.lower() for marker in ("todo", "replace this", "example only")):
+            continue
+        item = re.sub(r"^\*\*(.+?)\*\*", r"\1", item)
+        if ":" in item:
+            title, detail = item.split(":", 1)
+        elif " - " in item:
+            title, detail = item.split(" - ", 1)
+        else:
+            title, detail = item, item
+        title = title.strip(" -*`")
+        detail = detail.strip()
+        terms = extract_terms(f"{title} {detail}", limit=16)
+        if title and terms:
+            axes.append({"title": title, "detail": detail, "terms": terms})
+
+    profile_terms = extract_terms(content, limit=32)
+    if not axes and len(profile_terms) >= 3:
+        axes.append({"title": "Research Profile Synthesis", "detail": "General profile-derived synthesis.", "terms": profile_terms[:16]})
+    if not axes:
+        return {"enabled": False, "reason": "no_profile_focus_axes", "path": path.relative_to(vault).as_posix()}
+    return {"enabled": True, "path": path.relative_to(vault).as_posix(), "title": page_heading(content, "Research Profile"), "terms": profile_terms, "axes": axes}
+
+
+def match_research_axes(profile: dict, source_text: str, limit: int = 3) -> list[dict]:
+    source_terms = set(extract_terms(source_text, limit=80))
+    matches = []
+    for axis in profile.get("axes", []):
+        axis_terms = set(axis.get("terms", []))
+        matched = sorted(axis_terms & source_terms)
+        score = len(matched)
+        if score < 2:
+            continue
+        confidence = "high" if score >= 5 else "medium"
+        matches.append({**axis, "score": score, "confidence": confidence, "matched_terms": matched})
+    matches.sort(key=lambda item: (-item["score"], item["title"].lower()))
+    return matches[:limit]
+
+
+def append_auto_synthesis_update(
+    vault: Path,
+    match: dict,
+    source_title: str,
+    source_rel: str,
+    source_note_rel: str,
+    summary: list[str],
+    key_points: list[str],
+) -> str:
+    title = f"Auto Synthesis - {match['title']}"
+    path = vault / "wiki" / "syntheses" / f"auto-{slugify(match['title'])}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    profile_rel = research_profile_path(vault).relative_to(vault).as_posix()
+    related_terms = [
+        f"[[{titleize_slug(term)}]]"
+        for term in match.get("matched_terms", [])[:3]
+        if (vault / "wiki" / "concepts" / f"{slugify(term)}.md").exists()
+    ]
+    related = " ".join([f"[[{source_title}]]", "[[Research Profile]]", *related_terms])
+    update_lines = [
+        f"## Update {now_iso()}",
+        "",
+        f"Source note: [[{source_title}]]",
+        f"Source path: `{source_rel}`",
+        f"Research profile: `{profile_rel}`",
+        f"Matched focus: `{match['title']}`",
+        f"Confidence: `{match['confidence']}`",
+        f"Matched terms: {', '.join(match.get('matched_terms', [])) or 'none'}",
+        f"Related: {related}",
+        "",
+        "### Why It Matters",
+        "",
+        f"- This source appears relevant to `{match['title']}` and should be reviewed for durable claims, methods, limitations, or experiment ideas.",
+        "- Keep this as a candidate synthesis until a human or agent promotes it into a stable research note.",
+        "",
+        "### Evidence Snippets",
+        "",
+        *[f"- {line}" for line in (key_points or summary)[:5]],
+        "",
+        "### Needs Review",
+        "",
+        "- Review: confirm whether this source changes the current research argument.",
+        "- Review: extract concrete method, metric, limitation, or action item if supported by the source.",
+        "- Review: merge durable findings into a stable synthesis note when confidence is sufficient.",
+        "",
+    ]
+    if path.exists():
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("\n" + "\n".join(update_lines))
+    else:
+        path.write_text(
+            frontmatter_block(
+                {
+                    "tags": ["ghpf/synthesis", "ghpf/auto-synthesis"],
+                    "source": "research-profile",
+                    "created": now_iso(),
+                    "aliases": [title],
+                }
+            )
+            + "\n".join(
+                [
+                    f"# {title}",
+                    "",
+                    f"Profile: [[Research Profile]]",
+                    f"Focus detail: {match.get('detail', '')}",
+                    "",
+                    *update_lines,
+                ]
+            ),
+            encoding="utf-8",
+        )
+    rel = path.relative_to(vault).as_posix()
+    ensure_index_entry(vault, rel, title)
+    append_log(vault, f"auto-synthesized `{source_note_rel}` into `{rel}`.")
+    return rel
+
+
+def auto_synthesize_from_profile(
+    vault: Path,
+    source_title: str,
+    source_rel: str,
+    source_note_rel: str,
+    source_text: str,
+    summary: list[str],
+    key_points: list[str],
+) -> dict:
+    profile = parse_research_profile(vault)
+    if not profile.get("enabled"):
+        return {"enabled": False, "reason": profile.get("reason"), "created": []}
+    matches = match_research_axes(profile, f"{source_title}\n{source_text}")
+    created = [
+        append_auto_synthesis_update(vault, match, source_title, source_rel, source_note_rel, summary, key_points)
+        for match in matches
+    ]
+    return {"enabled": True, "profile": profile["path"], "matches": len(matches), "created": created}
+
+
 def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
     vault = vault.expanduser()
     selected = sources if sources else source_candidates(vault)
@@ -1634,6 +1787,7 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
     ingested = []
     skipped = []
     extracted = []
+    auto_syntheses = []
 
     for source_value in selected:
         try:
@@ -1762,6 +1916,14 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
         ensure_index_entry(vault, page_rel, title)
         for concept in concept_pages:
             ensure_index_entry(vault, concept, Path(concept).stem)
+        auto_synthesis = auto_synthesize_from_profile(vault, title, source_rel, page_rel, text, summary, key_points)
+        for rel in auto_synthesis.get("created", []):
+            manifest.setdefault("generated_pages", []).append(rel)
+        if auto_synthesis.get("enabled"):
+            manifest.setdefault("operations", []).append(
+                {"type": "auto_synthesis", "time": now_iso(), "source": source_rel, "pages": auto_synthesis.get("created", [])}
+            )
+        auto_syntheses.append({"source": source_rel, **auto_synthesis})
 
         manifest.setdefault("sources", []).append(
             {
@@ -1786,7 +1948,7 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
 
     manifest["generated_pages"] = sorted(set(manifest.get("generated_pages", [])))
     save_manifest(vault, manifest)
-    return {"ingested": ingested, "skipped": skipped, "extracted": extracted}
+    return {"ingested": ingested, "skipped": skipped, "extracted": extracted, "auto_syntheses": auto_syntheses}
 
 
 def build_graph(vault: Path) -> dict:
