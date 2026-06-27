@@ -45,9 +45,11 @@ EXTRACTABLE_SUFFIXES = TEXT_SOURCE_SUFFIXES | {".pdf", ".html", ".htm"} | OFFICE
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s\"<>]+", re.IGNORECASE)
 VECTOR_DIMS = 256
 IMAGE_CONTEXT_WORDS = {"chart", "graph", "plot", "figure", "diagram", "architecture", "flow", "screenshot", "canvas", "svg"}
 IMAGE_SKIP_WORDS = {"ads", "doubleclick", "googlesyndication", "tracker", "pixel", "icon", "avatar", "logo", "social", "share", "nav", "menu", "header", "footer"}
+BLOCKED_PDF_DISCOVERY_HOST_PARTS = {"sci-hub", "scihub", "libgen", "z-lib", "zlibrary"}
 
 
 def slugify(text: str) -> str:
@@ -1471,6 +1473,184 @@ def save_downloaded_pdf(vault: Path, url: str, body: bytes) -> Path:
     return path
 
 
+def normalize_doi(value: str) -> str | None:
+    value = value.strip()
+    value = re.sub(r"^doi:\s*", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", value, flags=re.IGNORECASE)
+    match = DOI_RE.search(value)
+    if not match:
+        return None
+    return match.group(0).rstrip(".,;:)]}>").lower()
+
+
+def is_blocked_pdf_candidate(url: str) -> bool:
+    host = urllib.parse.urlparse(url).netloc.lower()
+    return any(part in host for part in BLOCKED_PDF_DISCOVERY_HOST_PARTS)
+
+
+def is_pdf_response(url: str, content_type: str, body: bytes) -> bool:
+    path = urllib.parse.urlparse(url).path.lower()
+    return "application/pdf" in content_type.lower() or path.endswith(".pdf") or body.startswith(b"%PDF")
+
+
+def html_attr(tag: str, name: str) -> str | None:
+    match = re.search(rf"\b{name}\s*=\s*(['\"])(.*?)\1", tag, re.IGNORECASE | re.DOTALL)
+    if match:
+        return html.unescape(match.group(2).strip())
+    match = re.search(rf"\b{name}\s*=\s*([^\s>]+)", tag, re.IGNORECASE)
+    if match:
+        return html.unescape(match.group(1).strip())
+    return None
+
+
+def add_pdf_candidate(candidates: list[dict], seen: set[str], url: str, reason: str) -> None:
+    normalized = url.strip()
+    if not normalized or not URL_RE.match(normalized):
+        return
+    normalized = urllib.parse.urldefrag(normalized)[0]
+    if is_blocked_pdf_candidate(normalized) or normalized in seen:
+        return
+    seen.add(normalized)
+    candidates.append({"url": normalized, "reason": reason})
+
+
+def looks_like_pdf_link(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path.lower()
+    return path.endswith(".pdf") or "/pdf/" in path or path.endswith("/pdf") or ".pdf" in path
+
+
+def html_public_pdf_candidates(base_url: str, html_text: str) -> list[dict]:
+    candidates: list[dict] = []
+    seen: set[str] = set()
+    for tag in re.findall(r"<meta\b[^>]*>", html_text, flags=re.IGNORECASE | re.DOTALL):
+        name = (html_attr(tag, "name") or html_attr(tag, "property") or "").lower()
+        content = html_attr(tag, "content") or ""
+        if not content:
+            continue
+        if name in {"citation_pdf_url", "bepress_citation_pdf_url"}:
+            add_pdf_candidate(candidates, seen, urllib.parse.urljoin(base_url, content), f"html-meta:{name}")
+        elif name in {"dc.identifier", "dc.relation", "og:url"} and looks_like_pdf_link(content):
+            add_pdf_candidate(candidates, seen, urllib.parse.urljoin(base_url, content), f"html-meta:{name}")
+    for tag in re.findall(r"<a\b[^>]*>", html_text, flags=re.IGNORECASE | re.DOTALL):
+        href = html_attr(tag, "href") or ""
+        if not href:
+            continue
+        absolute = urllib.parse.urljoin(base_url, href)
+        if looks_like_pdf_link(absolute):
+            add_pdf_candidate(candidates, seen, absolute, "html-link:pdf")
+    return candidates
+
+
+def openalex_public_pdf_candidates(doi: str) -> tuple[list[dict], list[str]]:
+    warnings: list[str] = []
+    candidates: list[dict] = []
+    seen: set[str] = set()
+    encoded = urllib.parse.quote(doi, safe="")
+    url = f"https://api.openalex.org/works/https://doi.org/{encoded}"
+    try:
+        body, _ = fetch_url(url, max_bytes=5_000_000)
+        data = json.loads(body.decode("utf-8", errors="ignore"))
+    except Exception as exc:
+        return [], [f"OpenAlex OA PDF lookup failed for DOI {doi}: {exc}"]
+    for key in ("best_oa_location", "primary_location"):
+        location = data.get(key) or {}
+        pdf_url = location.get("pdf_url") or ""
+        if pdf_url:
+            add_pdf_candidate(candidates, seen, pdf_url, f"openalex:{key}:pdf_url")
+        landing_page_url = location.get("landing_page_url") or ""
+        if landing_page_url and looks_like_pdf_link(landing_page_url):
+            add_pdf_candidate(candidates, seen, landing_page_url, f"openalex:{key}:landing_page_url")
+    for index, location in enumerate(data.get("locations") or []):
+        if not isinstance(location, dict):
+            continue
+        pdf_url = location.get("pdf_url") or ""
+        if pdf_url:
+            add_pdf_candidate(candidates, seen, pdf_url, f"openalex:locations:{index}:pdf_url")
+        landing_page_url = location.get("landing_page_url") or ""
+        if landing_page_url and looks_like_pdf_link(landing_page_url):
+            add_pdf_candidate(candidates, seen, landing_page_url, f"openalex:locations:{index}:landing_page_url")
+    if not candidates:
+        warnings.append(f"OpenAlex did not report a public PDF URL for DOI {doi}.")
+    return candidates, warnings
+
+
+def public_pdf_candidates(source_url: str, html_text: str = "") -> tuple[list[dict], list[str]]:
+    candidates: list[dict] = []
+    warnings: list[str] = []
+    seen: set[str] = set()
+
+    for item in html_public_pdf_candidates(source_url, html_text):
+        add_pdf_candidate(candidates, seen, item["url"], item.get("reason", "html"))
+
+    dois = []
+    for value in (source_url, html_text[:100_000]):
+        for match in DOI_RE.finditer(value or ""):
+            doi = normalize_doi(match.group(0))
+            if doi and doi not in dois:
+                dois.append(doi)
+    for doi in dois[:3]:
+        oa_candidates, oa_warnings = openalex_public_pdf_candidates(doi)
+        warnings.extend(oa_warnings)
+        for item in oa_candidates:
+            add_pdf_candidate(candidates, seen, item["url"], item.get("reason", "openalex"))
+    return candidates, warnings
+
+
+def extract_url_pdf_result(
+    vault: Path,
+    source_url: str,
+    pdf_url: str,
+    body: bytes,
+    content_type: str,
+    warnings: list[str],
+    kind: str,
+) -> dict:
+    pdf_path = save_downloaded_pdf(vault, pdf_url, body)
+    original = preserve_original_file(vault, pdf_path, source_label=source_url)
+    original["source_url"] = pdf_url
+    if pdf_url != source_url:
+        original["discovered_from"] = source_url
+    if content_type:
+        original["content_type"] = content_type
+    text, pdf_warnings, method = extract_pdf_document(pdf_path)
+    title = page_title_from_path(pdf_path)
+    path = write_extracted_markdown(vault, source_url, f"{kind}:{method}", title, text, warnings=warnings + pdf_warnings)
+    records = index_extracted_evidence(vault, source_url, path, f"{kind}:{method}", title, text, parser=method, original=original)
+    return {
+        "source": source_url,
+        "path": path,
+        "kind": kind,
+        "parser": method,
+        "extracted": True,
+        "download": pdf_path,
+        "original": original,
+        "evidence_index": evidence_index_path(vault),
+        "evidence_records": len(records),
+        "warnings": warnings + pdf_warnings,
+    }
+
+
+def try_public_pdf_discovery(vault: Path, source_url: str, html_text: str, base_warnings: list[str]) -> tuple[dict | None, list[str]]:
+    candidates, warnings = public_pdf_candidates(source_url, html_text)
+    if not candidates:
+        return None, warnings
+    warnings.append(f"public_pdf_candidates: {len(candidates)}")
+    for candidate in candidates[:8]:
+        pdf_url = candidate["url"]
+        reason = candidate.get("reason", "unknown")
+        try:
+            body, content_type = fetch_url(pdf_url, max_bytes=60_000_000)
+        except Exception as exc:
+            warnings.append(f"Public PDF candidate fetch failed ({reason}): {pdf_url} :: {exc}")
+            continue
+        if is_pdf_response(pdf_url, content_type, body):
+            selected_warnings = base_warnings + warnings + [f"public_pdf_selected: {reason} {pdf_url}"]
+            return extract_url_pdf_result(vault, source_url, pdf_url, body, content_type, selected_warnings, "public-url-pdf"), warnings
+        warnings.append(f"Public PDF candidate was not a PDF ({reason}): {pdf_url} content_type={content_type or 'unknown'}")
+    return None, warnings
+
+
 def clean_vtt_text(text: str) -> str:
     lines = []
     previous = None
@@ -1643,21 +1823,17 @@ def extract_source_to_markdown(vault: Path, source_value: str | Path) -> dict:
         return {"source": value, "path": path, "kind": "youtube-transcript", "extracted": True, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": warnings}
     if is_url(value):
         body, content_type, fetch_warnings = fetch_web_content(value)
-        if "application/pdf" in content_type.lower() or urllib.parse.urlparse(value).path.lower().endswith(".pdf"):
-            pdf_path = save_downloaded_pdf(vault, value, body)
-            original = preserve_original_file(vault, pdf_path, source_label=value)
-            original["source_url"] = value
-            if content_type:
-                original["content_type"] = content_type
-            text, warnings, method = extract_pdf_document(pdf_path)
-            path = write_extracted_markdown(vault, value, f"url-pdf:{method}", page_title_from_path(pdf_path), text, warnings=fetch_warnings + warnings)
-            records = index_extracted_evidence(vault, value, path, f"url-pdf:{method}", page_title_from_path(pdf_path), text, parser=method, original=original)
-            return {"source": value, "path": path, "kind": "url-pdf", "parser": method, "extracted": True, "download": pdf_path, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": fetch_warnings + warnings}
+        if is_pdf_response(value, content_type, body):
+            return extract_url_pdf_result(vault, value, value, body, content_type, fetch_warnings, "url-pdf")
+        html_text = decode_response_body(body, content_type)
+        discovered_pdf, discovery_warnings = try_public_pdf_discovery(vault, value, html_text, fetch_warnings)
+        if discovered_pdf:
+            return discovered_pdf
         original = preserve_original_bytes(vault, value, body, ".html", source_url=value, content_type=content_type)
-        title, text, warnings = extract_html_document(decode_response_body(body, content_type), base_url=value)
-        path = write_extracted_markdown(vault, value, "web-page", title or urllib.parse.urlparse(value).netloc, text, warnings=fetch_warnings + warnings)
+        title, text, warnings = extract_html_document(html_text, base_url=value)
+        path = write_extracted_markdown(vault, value, "web-page", title or urllib.parse.urlparse(value).netloc, text, warnings=fetch_warnings + discovery_warnings + warnings)
         records = index_extracted_evidence(vault, value, path, "web-page", title or urllib.parse.urlparse(value).netloc, text, original=original)
-        return {"source": value, "path": path, "kind": "web-page", "extracted": True, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": fetch_warnings + warnings}
+        return {"source": value, "path": path, "kind": "web-page", "extracted": True, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": fetch_warnings + discovery_warnings + warnings}
 
     path = Path(value).expanduser()
     if not path.exists() or not path.is_file():

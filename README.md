@@ -89,8 +89,11 @@ python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest ./paper.pdf
 python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest ./report.docx
 python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest ./korean-document.hwp
 python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest https://example.com/article
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest https://doi.org/10.xxxx/example
 python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest https://www.youtube.com/watch?v=<id>
 ```
+
+For paper landing pages and DOI URLs, `extract` first tries the page itself. If the URL is not already a PDF, it looks for public PDF links in scholarly HTML metadata (`citation_pdf_url`, PDF anchors) and OpenAlex open-access locations. When a public PDF is found, GHFP downloads that PDF into `raw/sources/downloads/`, preserves it under `raw/originals/`, extracts page-level evidence, and ingests it with the source URL as provenance. It deliberately does not bypass paywalls or use piracy mirrors such as Sci-Hub, LibGen, or Z-Library; when no public PDF is available, it falls back to storing the web page content and discovery warnings.
 
 Sample and analyze YouTube, local video, or image frames as visual evidence:
 
@@ -234,6 +237,7 @@ Extraction preserves ontology-ready evidence by default:
 - Extracted evidence locations are indexed in `evidence/index.jsonl` with stable `evidence_id` / `chunk_id` values.
 - PDF pages/tables, YouTube transcript timestamps, web image candidates, and video/image frames keep machine-readable location metadata for later OpenCrab promotion.
 - Source notes in `wiki/sources/` link back to the preserved original and evidence index when `extract --ingest` is used.
+- Paper landing pages and DOI URLs can promote to a downloaded open-access PDF when scholarly metadata or OpenAlex reports a public PDF URL; blocked or non-public PDFs are not bypassed.
 
 Document parsing is tiered and optional-tool aware:
 
