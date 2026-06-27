@@ -2491,6 +2491,41 @@ def summarize_link_audit(report: dict) -> dict:
     }
 
 
+def graphify_next_steps(vault: Path, graphify_needed: bool, graphify_status: str, threshold: int) -> dict:
+    graphify_input_dir = vault / "raw" / "graphify_articles"
+    graphify_export_dir = vault / "swarmvault" / "exports" / "graphify"
+    input_files = sorted(p for p in graphify_input_dir.rglob("*") if p.is_file()) if graphify_input_dir.exists() else []
+    if graphify_status == "imported":
+        return {
+            "needed": False,
+            "summary": "Graphify graph.json was imported and the source-count checkpoint was updated.",
+            "input_dir": graphify_input_dir.relative_to(vault).as_posix(),
+            "input_files": len(input_files),
+            "next": [],
+        }
+    if not graphify_needed:
+        return {
+            "needed": False,
+            "summary": f"Graphify is below threshold; run maintenance again after {threshold} new source notes or use --force-graphify.",
+            "input_dir": graphify_input_dir.relative_to(vault).as_posix(),
+            "input_files": len(input_files),
+            "next": [],
+        }
+    return {
+        "needed": True,
+        "summary": "Graphify is recommended, but GHFP does not guess an external Graphify CLI command. Generate graph.json with your chosen Graphify tool, then import it.",
+        "input_dir": graphify_input_dir.relative_to(vault).as_posix(),
+        "input_files": len(input_files),
+        "fallback_corpus": "wiki/sources",
+        "expected_output_dir": graphify_export_dir.relative_to(vault).as_posix(),
+        "next": [
+            f"Place or generate the Graphify corpus under `{graphify_input_dir.relative_to(vault).as_posix()}` when using a bulk Graphify workflow.",
+            "Run your chosen Graphify tool externally so it writes a graph.json file.",
+            "Import the result with `python3 scripts/ghpf_wiki.py maintenance --vault <vault> --auto-graphify --graphify-graph <graph.json>`.",
+        ],
+    }
+
+
 def maintenance(
     vault: Path,
     threshold: int = 20,
@@ -2561,6 +2596,7 @@ def maintenance(
         "graphify_needed": graphify_needed,
         "graphify_status": graphify_status,
         "graphify_warning": graphify_warning,
+        "graphify_next_steps": graphify_next_steps(vault, graphify_needed, graphify_status, threshold),
         "graphify_result": graphify_result,
         "index": {"chunks": index_report.get("chunks"), "backend": index_report.get("backend")},
         "link_audit": summarize_link_audit(link_report),

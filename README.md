@@ -155,7 +155,7 @@ python3 scripts/ghpf_wiki.py maintenance --vault ./my-vault
 python3 scripts/ghpf_wiki.py maintenance --vault ./my-vault --threshold 20 --auto-graphify --graphify-graph ./graphify-output/graph.json
 ```
 
-`maintenance` refreshes the local index, link audit, graph export, and lint summary. It stores shared state in `swarmvault/state/maintenance-state.json`, so another computer using the same vault sees the same source count and last Graphify checkpoint. Graphify is recommended after the threshold is reached; actual import requires `--auto-graphify` plus an existing Graphify `graph.json`.
+`maintenance` refreshes the local index, link audit, graph export, and lint summary. It stores shared state in `swarmvault/state/maintenance-state.json`, so another computer using the same vault sees the same source count and last Graphify checkpoint. Graphify is recommended after the threshold is reached; when no `graph.json` is available, the command returns `graphify_next_steps` instead of guessing an external Graphify CLI command.
 
 Create a compact context pack for an agent:
 
