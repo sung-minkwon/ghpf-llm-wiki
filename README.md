@@ -131,12 +131,13 @@ Build a wikilink graph:
 
 ```bash
 python3 scripts/ghpf_wiki.py graph --vault ./my-vault
+python3 scripts/ghpf_wiki.py graph --vault ./my-vault --view semantic --write-obsidian-filter
 ```
 
-Obsidian Graph View note: `wiki/index.md` is a navigation hub and intentionally links many pages, so it can dominate the visual graph. For a more semantic graph, filter it out in Obsidian:
+Obsidian Graph View note: `wiki/index.md` is a navigation hub and intentionally links many pages, and auto-created concept notes can make the visual graph noisy. Use `--view semantic` for a source/card/synthesis/profile-centered graph. For a manual Obsidian filter:
 
 ```text
--path:wiki/index.md -path:wiki/log.md -path:wiki/overview.md
+-path:wiki/index.md -path:wiki/log.md -path:wiki/overview.md -path:wiki/concepts
 ```
 
 Import an external Graphify map as a non-canonical reference layer:

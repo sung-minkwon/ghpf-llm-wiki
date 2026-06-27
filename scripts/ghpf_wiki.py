@@ -2032,7 +2032,56 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
     return {"ingested": ingested, "skipped": skipped, "extracted": extracted, "auto_syntheses": auto_syntheses}
 
 
-def build_graph(vault: Path) -> dict:
+def graph_view_filter(view: str) -> str:
+    if view == "semantic":
+        return "-path:wiki/index.md -path:wiki/log.md -path:wiki/overview.md -path:wiki/concepts"
+    return ""
+
+
+def graph_page_kind(rel: str) -> str:
+    if rel.startswith("wiki/sources/"):
+        return "source"
+    if rel.startswith("wiki/cards/"):
+        return "card"
+    if rel.startswith("wiki/syntheses/"):
+        return "synthesis"
+    if rel.startswith("wiki/concepts/"):
+        return "concept"
+    if rel in {"wiki/research-profile.md"}:
+        return "profile"
+    if rel.startswith("graph_imports/"):
+        return "graph_import"
+    return "page"
+
+
+def graph_include(rel: str, view: str) -> bool:
+    if view == "full":
+        return True
+    if view == "semantic":
+        if rel in {"wiki/index.md", "wiki/log.md", "wiki/overview.md"}:
+            return False
+        if rel.startswith("wiki/concepts/"):
+            return False
+        return rel.startswith(("wiki/sources/", "wiki/cards/", "wiki/syntheses/", "graph_imports/")) or rel == "wiki/research-profile.md"
+    raise ValueError(f"unknown graph view: {view}")
+
+
+def write_obsidian_graph_filter(vault: Path, view: str) -> dict:
+    graph_config = vault / ".obsidian" / "graph.json"
+    if not graph_config.exists():
+        return {"updated": False, "reason": "missing_obsidian_graph_config"}
+    try:
+        data = json.loads(graph_config.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"updated": False, "reason": "invalid_obsidian_graph_config"}
+    data["search"] = graph_view_filter(view)
+    if view == "semantic":
+        data["showOrphans"] = False
+    graph_config.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {"updated": True, "path": graph_config.relative_to(vault).as_posix(), "search": data.get("search", "")}
+
+
+def build_graph(vault: Path, view: str = "full", write_obsidian_filter: bool = False) -> dict:
     nodes = {}
     edges = []
     title_to_id = {}
@@ -2040,35 +2089,45 @@ def build_graph(vault: Path) -> dict:
 
     for path in files:
         rel = path.relative_to(vault).as_posix()
-        title = path.stem
-        nodes[rel] = {"id": rel, "title": title, "path": rel, "kind": "page"}
         for alias in page_aliases(path):
             title_to_id[alias] = rel
+        if graph_include(rel, view):
+            title = path.stem
+            nodes[rel] = {"id": rel, "title": title, "path": rel, "kind": graph_page_kind(rel)}
 
     for path in files:
         source = path.relative_to(vault).as_posix()
+        if source not in nodes:
+            continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         for match in WIKILINK_RE.findall(text):
             target_title = match.strip()
             target = title_to_id.get(target_title.lower(), f"wiki/unresolved/{slugify(target_title)}.md")
-            if target not in nodes:
+            if target not in nodes and view != "full":
+                continue
+            if target not in nodes and view == "full":
                 nodes[target] = {"id": target, "title": target_title, "path": target, "kind": "unresolved"}
             edges.append({"source": source, "target": target, "type": "wikilink"})
 
     graph = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "view": view,
+        "filter": graph_view_filter(view),
         "node_count": len(nodes),
         "edge_count": len(edges),
         "nodes": list(nodes.values()),
         "edges": edges,
     }
+    if write_obsidian_filter:
+        graph["obsidian_graph_filter"] = write_obsidian_graph_filter(vault, view)
 
     state = vault / "swarmvault" / "state"
     exports = vault / "swarmvault" / "exports"
     state.mkdir(parents=True, exist_ok=True)
     exports.mkdir(parents=True, exist_ok=True)
-    (state / "graph.json").write_text(json.dumps(graph, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    (exports / "graph.html").write_text(render_graph_html(graph), encoding="utf-8")
+    suffix = "" if view == "full" else f"-{view}"
+    (state / f"graph{suffix}.json").write_text(json.dumps(graph, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (exports / f"graph{suffix}.html").write_text(render_graph_html(graph), encoding="utf-8")
     return graph
 
 
@@ -2080,7 +2139,7 @@ def render_graph_html(graph: dict) -> str:
 <style>body{{font-family:system-ui;margin:2rem;line-height:1.5}}pre{{white-space:pre-wrap;background:#f6f8fa;padding:1rem}}</style></head>
 <body>
 <h1>GHFP Wiki Graph</h1>
-<p>Nodes: {graph['node_count']} | Edges: {graph['edge_count']}</p>
+<p>View: {html.escape(str(graph.get('view', 'full')))} | Nodes: {graph['node_count']} | Edges: {graph['edge_count']}</p>
 <pre id="graph">{data}</pre>
 </body></html>
 """
@@ -3595,6 +3654,8 @@ def main() -> int:
 
     graph_p = sub.add_parser("graph")
     graph_p.add_argument("--vault", default=".")
+    graph_p.add_argument("--view", choices=["full", "semantic"], default="full")
+    graph_p.add_argument("--write-obsidian-filter", action="store_true", help="Write the graph view filter into .obsidian/graph.json when present.")
 
     extract_p = sub.add_parser("extract")
     extract_p.add_argument("--vault", default=".")
@@ -3758,8 +3819,20 @@ def main() -> int:
     elif args.command == "file-back":
         print(file_back(Path(args.vault), args.title, args.body, folder=args.folder))
     elif args.command == "graph":
-        graph = build_graph(Path(args.vault).expanduser())
-        print(json.dumps({"node_count": graph["node_count"], "edge_count": graph["edge_count"]}, indent=2))
+        graph = build_graph(Path(args.vault).expanduser(), view=args.view, write_obsidian_filter=args.write_obsidian_filter)
+        print(
+            json.dumps(
+                {
+                    "view": graph["view"],
+                    "node_count": graph["node_count"],
+                    "edge_count": graph["edge_count"],
+                    "filter": graph.get("filter", ""),
+                    "obsidian_graph_filter": graph.get("obsidian_graph_filter"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     elif args.command == "context":
         path = build_context(Path(args.vault).expanduser(), args.query, limit=args.limit)
         print(path)
