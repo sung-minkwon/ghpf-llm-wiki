@@ -11,6 +11,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import urllib.parse
 import urllib.request
@@ -18,6 +19,16 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from ghpf_wiki_support.dependencies import (  # noqa: E402
+    capabilities as dependency_capabilities,
+    command_available,
+    python_module_available,
+)
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 QUALITY_REQUIRED_FIELDS = ["tags", "source", "created", "aliases"]
@@ -2166,47 +2177,8 @@ def link_strengthen(vault: Path, page_rel: str, max_links: int = 5, backlink: bo
     return report
 
 
-def command_available(command: str) -> bool:
-    return shutil.which(command) is not None
-
-
-def python_module_available(module: str) -> bool:
-    result = subprocess.run(
-        ["python3", "-c", f"import {module}"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return result.returncode == 0
-
-
 def capabilities(vault: Path | None = None) -> dict:
-    modules = ["pypdf", "PyPDF2", "pdfplumber", "docx", "pptx", "openpyxl", "networkx", "youtube_transcript_api", "pytesseract", "playwright", "matplotlib", "numpy", "PIL"]
-    caps = {
-        "commands": {name: command_available(name) for name in ["git", "node", "npx", "uv", "uvx", "graphify", "playwright", "yt-dlp", "ffmpeg", "ffprobe", "tesseract", "obsidian", "opendataloader-pdf", "marker_single", "hwpjs", "deepcloak"]},
-        "python_modules": {name: python_module_available(name) for name in modules},
-        "optional_modes": {
-            "basic_wikilink_search": True,
-            "graph_sidecar": True,
-            "graphify_import_ready": True,
-            "graphify_cli_ready": command_available("graphify") or command_available("uv"),
-            "youtube_ingest_ready": command_available("yt-dlp") or command_available("uvx") or python_module_available("youtube_transcript_api"),
-            "ocr_ready": command_available("tesseract") or python_module_available("pytesseract"),
-            "advanced_pdf_extract_ready": command_available("opendataloader-pdf") or command_available("marker_single") or python_module_available("pdfplumber"),
-            "hwp_extract_ready": command_available("hwpjs") or command_available("npx"),
-            "office_extract_ready": python_module_available("docx") or python_module_available("pptx") or python_module_available("openpyxl") or command_available("npx"),
-            "playwright_ready": command_available("playwright") or python_module_available("playwright"),
-            "deepcloak_ready": command_available("deepcloak"),
-            "web_fallback_ready": python_module_available("playwright") or command_available("deepcloak"),
-            "figure_export_ready": python_module_available("matplotlib") and python_module_available("numpy"),
-            "image_frame_analysis_ready": python_module_available("PIL"),
-            "video_frame_extract_ready": command_available("ffmpeg"),
-            "youtube_frame_extract_ready": command_available("ffmpeg") and (command_available("yt-dlp") or command_available("uvx")),
-        },
-    }
-    if vault is not None:
-        caps["vault"] = doctor(vault)
-    return caps
+    return dependency_capabilities(vault, vault_status=doctor)
 
 
 def edge_endpoint(edge, names: tuple[str, ...], index: int) -> str | None:

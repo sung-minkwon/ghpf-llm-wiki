@@ -4,7 +4,7 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 
 ## Operating Rules
 
-- For a fresh clone, run `./install.sh` first. It creates `./my-vault`, installs project skills for Codex/Claude Code/Antigravity, checks capabilities, runs lint, and writes an install report.
+- For a fresh clone, run `./install.sh` first. It creates `.venv/`, installs the recommended Python dependency set, creates `./my-vault`, installs project skills for Codex/Claude Code/Antigravity, checks capabilities, runs lint, and writes an install report.
 - Treat `wiki/` as the canonical, human-readable Markdown wiki.
 - Treat `graph_imports/` as non-canonical Graphify reference material. Promote durable findings into `wiki/` before relying on them as maintained knowledge.
 - Treat `wiki/cards/` as the reusable structure for paper, experiment, and strategy insight work.
@@ -19,7 +19,7 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 - Do not rewrite user notes broadly. Merge focused changes and preserve provenance.
 - For setup, run `./install.sh` for the default install or `python3 scripts/setup_vault.py --vault <path> --profile auto` for manual setup.
 - For extract/video-frames/ingest/card/index/search/insight/evaluate/figure-card/figure-insight/figure-export/lint/quality/diff/state/link-audit/link-strengthen/graphify-import/cache-clean/file-back/graph/context/task sidecar work, run `python3 scripts/ghpf_wiki.py --help`.
-- Treat advanced PDF parsing, HWP/HWPX conversion, YouTube transcript metadata, OCR, office document parsing, and browser/DeepCloak fallback as optional environment capabilities. Check `python3 scripts/ghpf_wiki.py capabilities --vault <path>` before assuming they are installed.
+- Treat advanced PDF parsing, HWP/HWPX conversion, YouTube transcript metadata, OCR, office document parsing, and browser/DeepCloak fallback as optional environment capabilities. `./install.sh` installs recommended Python packages, but system tools such as `ffmpeg`, `tesseract`, Graphify, Obsidian, and Playwright browser binaries may still need separate installation. Check `python scripts/ghpf_wiki.py capabilities --vault <path>` from the activated `.venv` before assuming they are installed.
 
 ## Expected Workflow
 

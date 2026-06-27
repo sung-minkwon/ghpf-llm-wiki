@@ -2,6 +2,8 @@
 
 Obsidian-first LLM Wiki scaffold for research papers, trading strategy notes, codebase knowledge, and agent task memory.
 
+The repository name is lowercase (`ghpf-llm-wiki`); docs use **GHFP LLM Wiki** as the canonical project name.
+
 The default pattern is:
 
 - **Canonical wiki writer:** Obsidian-style Markdown under `wiki/`
@@ -19,6 +21,13 @@ cd ghpf-llm-wiki
 ```
 
 `./install.sh` runs the default post-clone flow: create `./my-vault`, install Codex/Claude Code/Antigravity project skills, print capabilities, run lint, and write `my-vault/swarmvault/exports/install-report.json`.
+It also creates `.venv/` and installs the recommended Python dependency set from `pyproject.toml`.
+
+Activate the environment before running later commands:
+
+```bash
+source .venv/bin/activate
+```
 
 Manual equivalent:
 
@@ -26,13 +35,24 @@ Manual equivalent:
 python3 scripts/bootstrap_install.py --vault ./my-vault --profile auto --agents codex,claude,antigravity
 ```
 
+Dependency install modes:
+
+```bash
+./install.sh --dependency-set recommended  # default: PDF, Office, YouTube, OCR bridge, figures, graph helpers
+./install.sh --dependency-set all          # adds Playwright Python package
+./install.sh --dependency-set core         # installs the project only
+./install.sh --dependency-set none         # skips Python dependency installation
+```
+
+Some capabilities still depend on external tools that pip cannot fully manage, such as `ffmpeg`, `tesseract`, Obsidian, Node/npx-based HWP tools, Graphify, and Playwright browser binaries. See `docs/dependencies.md`.
+
 Manual step-by-step install:
 
 ```bash
-python3 scripts/setup_vault.py --vault ./my-vault --profile auto
-python3 scripts/install_agents.py --scope project --agents codex,claude,antigravity
-python3 scripts/ghpf_wiki.py capabilities --vault ./my-vault
-python3 scripts/ghpf_wiki.py lint --vault ./my-vault
+python scripts/setup_vault.py --vault ./my-vault --profile auto
+python scripts/install_agents.py --scope project --agents codex,claude,antigravity
+python scripts/ghpf_wiki.py capabilities --vault ./my-vault
+python scripts/ghpf_wiki.py lint --vault ./my-vault
 ```
 
 Then open `my-vault/` as an Obsidian vault and ask your agent to use the GHFP wiki workflow.

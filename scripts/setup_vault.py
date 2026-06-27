@@ -81,8 +81,19 @@ Profile: `{profile}`
 
 def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = False) -> dict:
     if profile == "auto":
-        detected = detect_profile(sources or [str(vault)])
-        profile = detected["profile"]
+        existing_config = vault / "ghpf.config.json"
+        existing_profile = None
+        if existing_config.exists() and not force:
+            try:
+                existing_profile = json.loads(existing_config.read_text(encoding="utf-8")).get("profile")
+            except json.JSONDecodeError:
+                existing_profile = None
+        if existing_profile in {"general", "research", "trading", "codebase", "mixed"}:
+            profile = existing_profile
+            detected = {"profile": profile, "scores": {}, "sampled_files": 0, "source": "existing_config"}
+        else:
+            detected = detect_profile(sources or [str(vault)])
+            profile = detected["profile"]
     else:
         detected = {"profile": profile, "scores": {}, "sampled_files": 0}
 

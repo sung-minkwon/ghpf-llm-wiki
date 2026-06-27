@@ -9,6 +9,7 @@ Use the same rules as `AGENTS.md`:
 - `graph_imports/` stores non-canonical Graphify reference maps.
 - `swarmvault/` stores graph, context pack, cache, export, and task ledger artifacts.
 - Add `[[wikilinks]]` when connecting concepts, papers, strategies, entities, and experiments.
+- `./install.sh` creates `.venv/` and installs the recommended Python dependency set by default; activate it with `source .venv/bin/activate` before manual commands.
 
 Useful commands:
 

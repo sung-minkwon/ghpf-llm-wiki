@@ -37,6 +37,22 @@ For a fresh clone, prefer the one-command install:
 ```
 
 This creates `./my-vault`, installs project skills for Codex/Claude Code/Antigravity, checks capabilities, runs lint, and writes `my-vault/swarmvault/exports/install-report.json`.
+It also creates `.venv/` and installs the `recommended` Python dependency set from `pyproject.toml` unless `--dependency-set none` is passed.
+
+Use install modes when a smaller or larger environment is needed:
+
+```bash
+./install.sh --dependency-set core
+./install.sh --dependency-set recommended
+./install.sh --dependency-set all
+./install.sh --dependency-set none
+```
+
+After install, activate the environment for manual commands:
+
+```bash
+source .venv/bin/activate
+```
 
 Run:
 
