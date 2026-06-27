@@ -66,7 +66,7 @@ Example:
 python3 scripts/setup_vault.py --vault ~/obsidian/ghpf --source ~/papers --source ~/trading-notes --profile auto
 ```
 
-Each vault also gets `wiki/research-profile.md`. Edit that page once to define durable focus axes such as your main research question, experiment targets, trading strategy themes, or codebase concerns. After that, `ingest` automatically appends candidate updates to `wiki/syntheses/auto-*.md` when a new source matches the profile. Automatic updates are marked as candidates with confidence, matched terms, evidence snippets, and review notes.
+Each vault also gets `wiki/research-profile.md`. Edit that page once to define durable focus axes such as your main research question, experiment targets, trading strategy themes, or codebase concerns. After that, `ingest` automatically appends candidate updates to `wiki/syntheses/auto-*.md` when a new source matches the profile. Automatic updates stay as candidates by default and include confidence, evidence score, matched terms, evidence snippets, and review status.
 
 ## Sidecar Commands
 
@@ -81,6 +81,21 @@ Ingest source files into the compiled wiki:
 ```bash
 python3 scripts/ghpf_wiki.py ingest --vault ./my-vault ./paper-notes.md
 ```
+
+Auto-synthesis is enabled by default but conservative:
+
+```bash
+# Default: write candidate updates only.
+python3 scripts/ghpf_wiki.py ingest --vault ./my-vault ./paper-notes.md
+
+# Disable all automatic synthesis for a sensitive import.
+python3 scripts/ghpf_wiki.py ingest --vault ./my-vault --no-auto-synthesis ./private-notes.md
+
+# Opt in to stable-note promotion only when evidence score passes the threshold.
+python3 scripts/ghpf_wiki.py ingest --vault ./my-vault --auto-promote --min-evidence-score 0.8 ./paper-notes.md
+```
+
+Promotion creates or appends `wiki/syntheses/stable-*.md`. Use it for reviewed or high-trust pipelines; otherwise keep the default candidate workflow.
 
 Extract PDF, web page, local HTML, Office/HWP documents, or YouTube transcript sources into Markdown, then ingest them:
 

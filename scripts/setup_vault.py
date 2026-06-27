@@ -193,7 +193,7 @@ aliases: ["Research Profile"]
 
 Profile: `{profile}`
 
-Use this page to teach GHFP what "relevant to my work" means. After this file contains focus axes, `ingest` automatically appends candidate updates to `wiki/syntheses/auto-*.md`.
+Use this page to teach GHFP what "relevant to my work" means. After this file contains focus axes, `ingest` automatically appends candidate updates to `wiki/syntheses/auto-*.md`. Automatic updates remain candidates unless an explicit promotion policy is used.
 
 ## Research Questions
 
@@ -211,6 +211,7 @@ Use this page to teach GHFP what "relevant to my work" means. After this file co
 - Keep automatic updates as candidates until reviewed.
 - Prefer concrete method, metric, limitation, or decision impact over broad summary.
 - Mark weak or metadata-only evidence as `needs_review`.
+- Treat `ready_for_promotion` as a review queue, not as final truth.
 """
 
 

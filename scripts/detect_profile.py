@@ -16,7 +16,7 @@ KEYWORDS = {
     },
     "trading": {
         "bitcoin", "btc", "trading", "trade", "strategy", "backtest",
-        "ohlcv", "market", "risk", "portfolio", "kronos", "jutopia",
+        "ohlcv", "market", "risk", "portfolio", "allocation", "momentum",
         "비트코인", "자동매매", "전략", "백테스트",
     },
     "codebase": {
@@ -103,4 +103,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -1939,6 +1939,112 @@ def match_research_axes(profile: dict, source_text: str, limit: int = 3) -> list
     return matches[:limit]
 
 
+def auto_synthesis_evidence(
+    match: dict,
+    source_text: str,
+    summary: list[str],
+    key_points: list[str],
+    min_evidence_score: float,
+    auto_promote: bool,
+) -> dict:
+    evidence_lines = [line for line in (key_points or summary) if line.strip()]
+    evidence_text = "\n".join(evidence_lines).lower()
+    source_len = len(source_text.strip())
+    matched_terms = len(match.get("matched_terms", []))
+    concrete_terms = {
+        "method", "metric", "baseline", "evaluation", "validation", "limitation", "failure",
+        "experiment", "benchmark", "architecture", "component", "risk", "backtest",
+        "방법", "지표", "평가", "검증", "한계", "실험", "벤치마크", "구조", "위험", "백테스트",
+    }
+    concrete_hits = sorted(term for term in concrete_terms if term in evidence_text)
+    score = (
+        min(matched_terms / 6, 1.0) * 0.35
+        + min(len(evidence_lines) / 5, 1.0) * 0.25
+        + min(len(concrete_hits) / 3, 1.0) * 0.25
+        + min(source_len / 2400, 1.0) * 0.15
+    )
+    score = round(score, 3)
+    ready = score >= min_evidence_score
+    lifecycle = "stable" if auto_promote and ready else "candidate"
+    review_status = "auto_promoted" if lifecycle == "stable" else ("ready_for_promotion" if ready else "needs_review")
+    return {
+        "score": score,
+        "threshold": min_evidence_score,
+        "lifecycle": lifecycle,
+        "review_status": review_status,
+        "matched_term_count": matched_terms,
+        "evidence_line_count": len(evidence_lines),
+        "concrete_hits": concrete_hits,
+        "auto_promote": auto_promote,
+    }
+
+
+def write_stable_synthesis_update(
+    vault: Path,
+    match: dict,
+    source_title: str,
+    source_rel: str,
+    source_note_rel: str,
+    summary: list[str],
+    key_points: list[str],
+    evidence: dict,
+) -> str:
+    title = f"Stable Synthesis - {match['title']}"
+    path = vault / "wiki" / "syntheses" / f"stable-{slugify(match['title'])}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    update_lines = [
+        f"## Promoted Update {now_iso()}",
+        "",
+        f"Source note: [[{source_title}]]",
+        f"Source path: `{source_rel}`",
+        f"Source note path: `{source_note_rel}`",
+        f"Evidence score: `{evidence['score']}`",
+        f"Promotion threshold: `{evidence['threshold']}`",
+        f"Matched focus: `{match['title']}`",
+        f"Matched terms: {', '.join(match.get('matched_terms', [])) or 'none'}",
+        "",
+        "### Durable Candidate",
+        "",
+        *[f"- {line}" for line in (key_points or summary)[:5]],
+        "",
+        "### Review Boundary",
+        "",
+        "- This note was promoted by an explicit `--auto-promote` run.",
+        "- Treat it as stable retrieval material, not as a final paper claim or trading instruction without source review.",
+        "",
+    ]
+    if path.exists():
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("\n" + "\n".join(update_lines))
+    else:
+        path.write_text(
+            frontmatter_block(
+                {
+                    "tags": ["ghpf/synthesis", "ghpf/stable-synthesis"],
+                    "source": "auto-synthesis-promotion",
+                    "created": now_iso(),
+                    "aliases": [title],
+                    "lifecycle": "stable",
+                }
+            )
+            + "\n".join(
+                [
+                    f"# {title}",
+                    "",
+                    f"Profile: [[Research Profile]]",
+                    f"Focus detail: {match.get('detail', '')}",
+                    "",
+                    *update_lines,
+                ]
+            ),
+            encoding="utf-8",
+        )
+    rel = path.relative_to(vault).as_posix()
+    ensure_index_entry(vault, rel, title)
+    append_log(vault, f"auto-promoted `{source_note_rel}` into `{rel}`.")
+    return rel
+
+
 def append_auto_synthesis_update(
     vault: Path,
     match: dict,
@@ -1947,7 +2053,8 @@ def append_auto_synthesis_update(
     source_note_rel: str,
     summary: list[str],
     key_points: list[str],
-) -> str:
+    evidence: dict,
+) -> dict:
     title = f"Auto Synthesis - {match['title']}"
     path = vault / "wiki" / "syntheses" / f"auto-{slugify(match['title'])}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1966,6 +2073,11 @@ def append_auto_synthesis_update(
         f"Research profile: `{profile_rel}`",
         f"Matched focus: `{match['title']}`",
         f"Confidence: `{match['confidence']}`",
+        f"Lifecycle: `{evidence['lifecycle']}`",
+        f"Review status: `{evidence['review_status']}`",
+        f"Evidence score: `{evidence['score']}`",
+        f"Promotion threshold: `{evidence['threshold']}`",
+        f"Auto-promote enabled: `{str(evidence['auto_promote']).lower()}`",
         f"Matched terms: {', '.join(match.get('matched_terms', [])) or 'none'}",
         f"Related: {related}",
         "",
@@ -1992,10 +2104,11 @@ def append_auto_synthesis_update(
         path.write_text(
             frontmatter_block(
                 {
-                    "tags": ["ghpf/synthesis", "ghpf/auto-synthesis"],
+                    "tags": ["ghpf/synthesis", "ghpf/auto-synthesis", "ghpf/lifecycle/candidate"],
                     "source": "research-profile",
                     "created": now_iso(),
                     "aliases": [title],
+                    "lifecycle": "candidate",
                 }
             )
             + "\n".join(
@@ -2013,7 +2126,10 @@ def append_auto_synthesis_update(
     rel = path.relative_to(vault).as_posix()
     ensure_index_entry(vault, rel, title)
     append_log(vault, f"auto-synthesized `{source_note_rel}` into `{rel}`.")
-    return rel
+    promoted = None
+    if evidence["lifecycle"] == "stable":
+        promoted = write_stable_synthesis_update(vault, match, source_title, source_rel, source_note_rel, summary, key_points, evidence)
+    return {"candidate": rel, "promoted": promoted, "evidence": evidence}
 
 
 def auto_synthesize_from_profile(
@@ -2024,19 +2140,49 @@ def auto_synthesize_from_profile(
     source_text: str,
     summary: list[str],
     key_points: list[str],
+    enabled: bool = True,
+    auto_promote: bool = False,
+    min_evidence_score: float = 0.75,
+    max_auto_notes: int = 3,
 ) -> dict:
+    if not enabled:
+        return {"enabled": False, "reason": "disabled_by_request", "created": [], "promoted": []}
+    if max_auto_notes <= 0:
+        return {"enabled": False, "reason": "max_auto_notes_zero", "created": [], "promoted": []}
     profile = parse_research_profile(vault)
     if not profile.get("enabled"):
-        return {"enabled": False, "reason": profile.get("reason"), "created": []}
-    matches = match_research_axes(profile, f"{source_title}\n{source_text}")
-    created = [
-        append_auto_synthesis_update(vault, match, source_title, source_rel, source_note_rel, summary, key_points)
-        for match in matches
-    ]
-    return {"enabled": True, "profile": profile["path"], "matches": len(matches), "created": created}
+        return {"enabled": False, "reason": profile.get("reason"), "created": [], "promoted": []}
+    matches = match_research_axes(profile, f"{source_title}\n{source_text}", limit=max_auto_notes)
+    updates = []
+    for match in matches:
+        evidence = auto_synthesis_evidence(match, source_text, summary, key_points, min_evidence_score, auto_promote)
+        updates.append(append_auto_synthesis_update(vault, match, source_title, source_rel, source_note_rel, summary, key_points, evidence))
+    created = [item["candidate"] for item in updates if item.get("candidate")]
+    promoted = [item["promoted"] for item in updates if item.get("promoted")]
+    return {
+        "enabled": True,
+        "profile": profile["path"],
+        "matches": len(matches),
+        "created": created,
+        "promoted": promoted,
+        "policy": {
+            "auto_promote": auto_promote,
+            "min_evidence_score": min_evidence_score,
+            "max_auto_notes": max_auto_notes,
+        },
+        "evidence": [item["evidence"] for item in updates],
+    }
 
 
-def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
+def ingest_sources(
+    vault: Path,
+    sources: list[str],
+    move: bool = False,
+    auto_synthesis: bool = True,
+    auto_promote: bool = False,
+    min_evidence_score: float = 0.75,
+    max_auto_notes: int = 3,
+) -> dict:
     vault = vault.expanduser()
     selected = sources if sources else source_candidates(vault)
     manifest = load_manifest(vault)
@@ -2173,14 +2319,33 @@ def ingest_sources(vault: Path, sources: list[str], move: bool = False) -> dict:
         ensure_index_entry(vault, page_rel, title)
         for concept in concept_pages:
             ensure_index_entry(vault, concept, Path(concept).stem)
-        auto_synthesis = auto_synthesize_from_profile(vault, title, source_rel, page_rel, text, summary, key_points)
-        for rel in auto_synthesis.get("created", []):
+        auto_synthesis_result = auto_synthesize_from_profile(
+            vault,
+            title,
+            source_rel,
+            page_rel,
+            text,
+            summary,
+            key_points,
+            enabled=auto_synthesis,
+            auto_promote=auto_promote,
+            min_evidence_score=min_evidence_score,
+            max_auto_notes=max_auto_notes,
+        )
+        for rel in auto_synthesis_result.get("created", []) + auto_synthesis_result.get("promoted", []):
             manifest.setdefault("generated_pages", []).append(rel)
-        if auto_synthesis.get("enabled"):
+        if auto_synthesis_result.get("enabled"):
             manifest.setdefault("operations", []).append(
-                {"type": "auto_synthesis", "time": now_iso(), "source": source_rel, "pages": auto_synthesis.get("created", [])}
+                {
+                    "type": "auto_synthesis",
+                    "time": now_iso(),
+                    "source": source_rel,
+                    "pages": auto_synthesis_result.get("created", []),
+                    "promoted": auto_synthesis_result.get("promoted", []),
+                    "policy": auto_synthesis_result.get("policy", {}),
+                }
             )
-        auto_syntheses.append({"source": source_rel, **auto_synthesis})
+        auto_syntheses.append({"source": source_rel, **auto_synthesis_result})
 
         manifest.setdefault("sources", []).append(
             {
@@ -3836,12 +4001,20 @@ def main() -> int:
     extract_p = sub.add_parser("extract")
     extract_p.add_argument("--vault", default=".")
     extract_p.add_argument("--ingest", action="store_true", help="Ingest extracted Markdown into wiki notes after extraction.")
+    extract_p.add_argument("--no-auto-synthesis", action="store_true", help="Disable research-profile candidate synthesis when used with --ingest.")
+    extract_p.add_argument("--auto-promote", action="store_true", help="Promote high-scoring auto-synthesis updates into stable synthesis notes.")
+    extract_p.add_argument("--min-evidence-score", type=float, default=0.75, help="Minimum evidence score required for ready/promoted auto-synthesis updates.")
+    extract_p.add_argument("--max-auto-notes", type=int, default=3, help="Maximum research-profile axes to update for each ingested source.")
     extract_p.add_argument("sources", nargs="+", help="PDF files, HTML files, web URLs, YouTube URLs, or text files.")
 
     ingest_p = sub.add_parser("ingest")
     ingest_p.add_argument("--vault", default=".")
     ingest_p.add_argument("sources", nargs="*", help="Files or URLs to ingest. Defaults to raw/ and _raw/.")
     ingest_p.add_argument("--move", action="store_true", help="Delete original external source after copying to raw/.")
+    ingest_p.add_argument("--no-auto-synthesis", action="store_true", help="Disable research-profile candidate synthesis.")
+    ingest_p.add_argument("--auto-promote", action="store_true", help="Promote high-scoring auto-synthesis updates into stable synthesis notes.")
+    ingest_p.add_argument("--min-evidence-score", type=float, default=0.75, help="Minimum evidence score required for ready/promoted auto-synthesis updates.")
+    ingest_p.add_argument("--max-auto-notes", type=int, default=3, help="Maximum research-profile axes to update for each ingested source.")
 
     lint_p = sub.add_parser("lint")
     lint_p.add_argument("--vault", default=".")
@@ -3983,10 +4156,31 @@ def main() -> int:
         result = extract_sources(Path(args.vault), args.sources)
         if args.ingest:
             paths = [item["path"] for item in result["extracted"]]
-            result["ingest"] = ingest_sources(Path(args.vault), paths)
+            result["ingest"] = ingest_sources(
+                Path(args.vault),
+                paths,
+                auto_synthesis=not args.no_auto_synthesis,
+                auto_promote=args.auto_promote,
+                min_evidence_score=args.min_evidence_score,
+                max_auto_notes=args.max_auto_notes,
+            )
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "ingest":
-        print(json.dumps(ingest_sources(Path(args.vault), args.sources, move=args.move), ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                ingest_sources(
+                    Path(args.vault),
+                    args.sources,
+                    move=args.move,
+                    auto_synthesis=not args.no_auto_synthesis,
+                    auto_promote=args.auto_promote,
+                    min_evidence_score=args.min_evidence_score,
+                    max_auto_notes=args.max_auto_notes,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     elif args.command == "lint":
         report = lint_wiki(Path(args.vault))
         print(json.dumps(report, ensure_ascii=False, indent=2))
