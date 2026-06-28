@@ -27,7 +27,7 @@ except ModuleNotFoundError:  # pragma: no cover - used when installed as a packa
     from . import vault_layout as layout
     from . import wiki_curation
 
-WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
+WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\n]*?)?\]\]")
 QUALITY_REQUIRED_FIELDS = ["tags", "source", "created", "aliases"]
 QUALITY_WEIGHTS = {
     "completeness": 0.20,
@@ -230,12 +230,18 @@ def ensure_index_entry(vault: Path, page_rel: str, title: str) -> None:
     if not index_path.exists():
         index_path.write_text("# GHFP LLM Wiki Index\n\n## Pages\n\n", encoding="utf-8")
     text = index_path.read_text(encoding="utf-8")
-    entry = f"- [[{title}]] - `{page_rel}`"
+    target = Path(page_rel).stem
+    alias = wikilink_alias(title)
+    entry = f"- [[{target}|{alias}]] - `{page_rel}`"
     if entry not in text:
         with index_path.open("a", encoding="utf-8") as handle:
             if not text.endswith("\n"):
                 handle.write("\n")
             handle.write(entry + "\n")
+
+
+def wikilink_alias(title: str) -> str:
+    return re.sub(r"[\[\]]", "", re.sub(r"\s+", " ", str(title))).strip() or "Untitled"
 
 
 def page_index_title(path: Path) -> str:
@@ -3873,15 +3879,38 @@ def hybrid_search(vault: Path, query: str, limit: int = 10) -> dict:
     scored = []
     for chunk in chunks:
         haystack = f"{chunk['title']} {chunk['section']} {chunk['text']}".lower()
+        title_haystack = str(chunk["title"]).lower()
         keyword = sum(haystack.count(term) for term in query_terms)
+        title_keyword = sum(title_haystack.count(term) for term in query_terms)
+        title_bonus = title_keyword * 4.0
+        if len(query_terms) >= 4 and title_keyword >= max(5, int(len(query_terms) * 0.75)):
+            title_bonus += 180.0
         vector = cosine(query_vec, hashed_vector(haystack))
         card_boost = 0.35 if "/cards/" in layout.to_logical_rel(vault, vault / chunk["path"]) else 0.0
         graph_boost = min(len(WIKILINK_RE.findall(chunk["text"])) * 0.03, 0.3)
-        score = keyword + vector * 3.0 + card_boost + graph_boost
+        score = keyword + title_bonus + vector * 3.0 + card_boost + graph_boost
         if score > 0:
-            scored.append({"score": round(score, 4), "keyword": keyword, "vector": round(vector, 4), "graph": round(graph_boost, 4), "card_boost": card_boost, **chunk})
+            scored.append(
+                {
+                    "score": round(score, 4),
+                    "keyword": keyword,
+                    "title_keyword": title_keyword,
+                    "vector": round(vector, 4),
+                    "graph": round(graph_boost, 4),
+                    "card_boost": card_boost,
+                    **chunk,
+                }
+            )
     scored.sort(key=lambda item: (-item["score"], item["path"], item["chunk_id"]))
-    results = scored[:limit]
+    results = []
+    seen_paths = set()
+    for item in scored:
+        if item["path"] in seen_paths:
+            continue
+        seen_paths.add(item["path"])
+        results.append(item)
+        if len(results) >= limit:
+            break
     out = vpath(vault, "swarmvault/exports") / "search-report.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     report = {"query": query, "limit": limit, "results": results}
