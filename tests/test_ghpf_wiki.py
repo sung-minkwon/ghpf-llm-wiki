@@ -68,6 +68,35 @@ class GhpfWikiTests(unittest.TestCase):
             content = routing.read_text(encoding="utf-8")
             self.assertIn("wiki/domains/<domain-slug>/", content)
             self.assertIn("LLM Agent Checklist", content)
+            overview = vault / "300. wiki" / "overview.md"
+            index = vault / "300. wiki" / "index.md"
+            domain_index = vault / "300. wiki" / "400. domains" / "index.md"
+
+            self.assertTrue(overview.exists())
+            self.assertTrue(index.exists())
+            self.assertTrue(domain_index.exists())
+            self.assertIn("## Start Here", overview.read_text(encoding="utf-8"))
+            self.assertIn("## Start Here", index.read_text(encoding="utf-8"))
+            self.assertIn("# Domain Index", domain_index.read_text(encoding="utf-8"))
+            self.assertNotIn("Summarize the living knowledge base here", overview.read_text(encoding="utf-8"))
+
+    def test_curate_replaces_placeholder_entrypoints(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            completed = self.run_setup("--vault", str(vault), "--profile", "general", "--json")
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+
+            overview = vault / "300. wiki" / "overview.md"
+            index = vault / "300. wiki" / "index.md"
+            overview.write_text("# GHFP LLM Wiki Overview\n\nSummarize the living knowledge base here.\n", encoding="utf-8")
+            index.write_text("# GHFP LLM Wiki Index\n\nProfile: `general`\n\n## Core Areas\n\n", encoding="utf-8")
+
+            curated = self.run_cli("curate", "--vault", str(vault))
+            self.assertEqual(curated.returncode, 0, curated.stderr)
+            result = json.loads(curated.stdout)
+            self.assertIn("300. wiki/overview.md", result["curation"]["updated"])
+            self.assertIn("## Start Here", overview.read_text(encoding="utf-8"))
+            self.assertIn("## Start Here", index.read_text(encoding="utf-8"))
 
     def test_fetch_url_reports_truncation(self):
         _BodyHandler.body = b"0123456789END"

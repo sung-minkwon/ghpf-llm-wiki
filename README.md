@@ -207,6 +207,12 @@ python3 scripts/ghpf_wiki.py link-audit --vault ./my-vault
 python3 scripts/ghpf_wiki.py link-strengthen --vault ./my-vault --page wiki/sources/paper-notes.md --max-links 5 --backlink
 ```
 
+Refresh the human-readable overview, index, and domain entrypoints after adding or reorganizing knowledge:
+
+```bash
+python3 scripts/ghpf_wiki.py curate --vault ./my-vault
+```
+
 Run cross-machine maintenance and Graphify threshold checks:
 
 ```bash

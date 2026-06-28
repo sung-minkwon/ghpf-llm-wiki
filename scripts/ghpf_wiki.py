@@ -22,8 +22,10 @@ from pathlib import Path
 
 try:
     import vault_layout as layout
+    import wiki_curation
 except ModuleNotFoundError:  # pragma: no cover - used when installed as a package entry point.
     from . import vault_layout as layout
+    from . import wiki_curation
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 QUALITY_REQUIRED_FIELDS = ["tags", "source", "created", "aliases"]
@@ -263,6 +265,16 @@ def sync_wiki_index(vault: Path) -> dict:
         added.append(rel)
         index_text += f"\n{rel}"
     return {"added": added, "added_count": len(added)}
+
+
+def curate_wiki(vault: Path, force: bool = False) -> dict:
+    vault = vault.expanduser()
+    config = load_vault_config(vault)
+    profile = str(config.get("profile") or "general") if isinstance(config, dict) else "general"
+    curation = wiki_curation.curate_entrypoints(vault, profile=profile, force=force, config=config if isinstance(config, dict) else None)
+    index_sync = sync_wiki_index(vault)
+    append_log(vault, "curated human-readable overview, index, and domain entrypoints.")
+    return {"profile": profile, "curation": curation, "index_sync": index_sync}
 
 
 def root_index_bridge_content(vault: Path | None = None) -> str:
@@ -4053,6 +4065,10 @@ def main() -> int:
     graph_p.add_argument("--view", choices=["full", "semantic"], default="full")
     graph_p.add_argument("--write-obsidian-filter", action="store_true", help="Write the graph view filter into .obsidian/graph.json when present.")
 
+    curate_p = sub.add_parser("curate")
+    curate_p.add_argument("--vault", default=".")
+    curate_p.add_argument("--force", action="store_true", help="Regenerate managed human-readable entrypoint pages even when they already exist.")
+
     extract_p = sub.add_parser("extract")
     extract_p.add_argument("--vault", default=".")
     extract_p.add_argument("--ingest", action="store_true", help="Ingest extracted Markdown into wiki notes after extraction.")
@@ -4222,6 +4238,8 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if has_failed_skips(result) or has_failed_skips(result.get("ingest", {})):
             return 1
+    elif args.command == "curate":
+        print(json.dumps(curate_wiki(Path(args.vault), force=args.force), ensure_ascii=False, indent=2))
     elif args.command == "ingest":
         result = ingest_sources(
             Path(args.vault),

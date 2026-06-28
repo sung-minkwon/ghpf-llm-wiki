@@ -21,6 +21,7 @@ from vault_layout import (  # noqa: E402
     load_vault_config,
     resolve_vault_path,
 )
+from wiki_curation import curate_entrypoints  # noqa: E402
 
 
 def load_profile(profile: str) -> dict:
@@ -375,19 +376,10 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
         created_dirs.append(str(path.relative_to(vault)))
 
     now = datetime.now(timezone.utc).isoformat()
-    write_if_missing(
-        resolve_vault_path(vault, "wiki/index.md", config=layout_config),
-        f"# GHFP LLM Wiki Index\n\nProfile: `{profile}`\n\n## Core Areas\n\n",
-        force=force,
-    )
+    curation = curate_entrypoints(vault, profile=profile, force=force, config=layout_config)
     write_if_missing(
         resolve_vault_path(vault, "wiki/log.md", config=layout_config),
         f"# GHFP LLM Wiki Log\n\n- {now}: initialized profile `{profile}`.\n",
-        force=False,
-    )
-    write_if_missing(
-        resolve_vault_path(vault, "wiki/overview.md", config=layout_config),
-        "# GHFP LLM Wiki Overview\n\nSummarize the living knowledge base here.\n",
         force=False,
     )
     write_if_missing(resolve_vault_path(vault, "wiki/research-profile.md", config=layout_config), research_profile_content(profile), force=False)
@@ -421,6 +413,7 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
         "layout": layout,
         "detected": detected,
         "created_dirs": created_dirs,
+        "curation": curation,
         "root_compatibility": root_compatibility,
         "warnings": warnings,
     }
