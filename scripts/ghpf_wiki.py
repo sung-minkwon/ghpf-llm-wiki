@@ -3886,9 +3886,14 @@ def hybrid_search(vault: Path, query: str, limit: int = 10) -> dict:
         if len(query_terms) >= 4 and title_keyword >= max(5, int(len(query_terms) * 0.75)):
             title_bonus += 180.0
         vector = cosine(query_vec, hashed_vector(haystack))
-        card_boost = 0.35 if "/cards/" in layout.to_logical_rel(vault, vault / chunk["path"]) else 0.0
+        logical_rel = layout.to_logical_rel(vault, vault / chunk["path"])
+        card_boost = 70.0 if "/cards/" in logical_rel else 0.0
+        synthesis_boost = 18.0 if "/syntheses/" in logical_rel else 0.0
+        concept_boost = 18.0 if "/concepts/" in logical_rel else 0.0
+        strategy_boost = 30.0 if "/trading/strategies/" in logical_rel else 0.0
+        navigation_penalty = 0.15 if chunk["path"].endswith(("/source-catalog.md", "/index.md", "wiki/index.md")) else 1.0
         graph_boost = min(len(WIKILINK_RE.findall(chunk["text"])) * 0.03, 0.3)
-        score = keyword + title_bonus + vector * 3.0 + card_boost + graph_boost
+        score = (keyword + title_bonus + vector * 3.0 + graph_boost) * navigation_penalty + card_boost + synthesis_boost + concept_boost + strategy_boost
         if score > 0:
             scored.append(
                 {
@@ -3898,6 +3903,10 @@ def hybrid_search(vault: Path, query: str, limit: int = 10) -> dict:
                     "vector": round(vector, 4),
                     "graph": round(graph_boost, 4),
                     "card_boost": card_boost,
+                    "synthesis_boost": synthesis_boost,
+                    "concept_boost": concept_boost,
+                    "strategy_boost": strategy_boost,
+                    "navigation_penalty": navigation_penalty,
                     **chunk,
                 }
             )
