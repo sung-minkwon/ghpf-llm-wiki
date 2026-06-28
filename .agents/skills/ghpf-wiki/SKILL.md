@@ -101,6 +101,15 @@ For each source in `raw/` or `_raw/`:
 5. Add source references and `[[wikilinks]]`.
 6. Append the operation to `wiki/log.md`.
 
+If older source notes still read like extraction logs or web navigation text, regenerate them with:
+
+```bash
+python3 scripts/ghpf_wiki.py source-curate --vault <path> wiki/sources/<source-note>.md
+python3 scripts/ghpf_wiki.py source-curate --vault <path> --all-sources
+```
+
+`source-curate` keeps source provenance and rewrites the note into Summary, Key Claims, Relevance To Current Work, Limitations, Key Links, Source Coverage, and Open Questions sections.
+
 ## Graphify Import
 
 Use Graphify for bulk source maps, then import the generated graph as a reference layer:

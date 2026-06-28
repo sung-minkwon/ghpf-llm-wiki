@@ -131,6 +131,30 @@ class GhpfWikiTests(unittest.TestCase):
         result = json.loads(completed.stdout)
         self.assertEqual(result["skipped"][0]["reason"], "missing_or_not_file")
 
+    def test_lint_resolves_decimal_path_wikilinks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            completed = self.run_setup("--vault", str(vault), "--profile", "general", "--json")
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            target = vault / "300. wiki" / "360. syntheses" / "foo.md"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                ghpf_wiki.frontmatter_block({"tags": ["ghpf/synthesis"], "source": "test", "created": "2026-01-01", "aliases": ["Foo"]})
+                + "# Foo\n",
+                encoding="utf-8",
+            )
+            overview = vault / "300. wiki" / "overview.md"
+            overview.write_text(
+                ghpf_wiki.frontmatter_block({"tags": ["ghpf/overview"], "source": "test", "created": "2026-01-01", "aliases": ["Overview"]})
+                + "# Overview\n\n[[300. wiki/360. syntheses/foo|Foo Synthesis]]\n",
+                encoding="utf-8",
+            )
+
+            report = ghpf_wiki.lint_wiki(vault)
+
+        broken = [item for item in report["broken_links"] if item["target"] == "300. wiki/360. syntheses/foo"]
+        self.assertEqual(broken, [])
+
     def test_ingest_duplicate_hash_in_same_run_skips_second_source(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -148,6 +172,72 @@ class GhpfWikiTests(unittest.TestCase):
         self.assertEqual(len(result["ingested"]), 1)
         self.assertEqual(len(result["skipped"]), 1)
         self.assertEqual(result["skipped"][0]["reason"], "already_ingested")
+
+    def test_ingest_source_note_filters_web_boilerplate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / "vault"
+            source = root / "arxiv.md"
+            source.write_text(
+                "\n".join(
+                    [
+                        "# [2509.16330] Generalizability of Large Language Model-Based Agents",
+                        "Skip to main content",
+                        "Original source: `https://arxiv.org/abs/2509.16330`",
+                        "Extraction kind: `web-page`",
+                        "Title: Generalizability of Large Language Model-Based Agents: A Comprehensive Survey",
+                        "Authors: Example Author and Example Coauthor",
+                        "Abstract: Generalizability is a critical challenge for large language model based agents deployed across changing tasks and environments. This survey provides a taxonomy of generalization settings, evaluation benchmarks, agent components, and future research directions. It identifies limitations in current benchmark design and highlights the need to separate model capability from tool, memory, and environment effects.",
+                        "Subjects: Artificial Intelligence",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            completed = self.run_cli("ingest", "--vault", str(vault), str(source))
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            note_path = vault / result["ingested"][0]["source_note"]
+            note = note_path.read_text(encoding="utf-8")
+            self.assertIn("## Key Claims", note)
+            self.assertIn("## Relevance To Current Work", note)
+            self.assertIn("Generalizability is a critical challenge", note)
+            self.assertNotIn("Skip to main content", note)
+            self.assertNotIn("Extraction kind", note)
+
+    def test_source_curate_repairs_existing_source_note(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / "vault"
+            source = root / "paper.md"
+            source.write_text(
+                "Title: Test Agent Survey Authors: Example Author Abstract: Agent evaluation should test task, environment, and tool-use shifts instead of only replaying in-distribution examples. The source proposes benchmark dimensions that expose brittle generalization behavior. Subjects: Artificial Intelligence\n",
+                encoding="utf-8",
+            )
+            completed = self.run_cli("ingest", "--vault", str(vault), str(source))
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            source_note = vault / result["ingested"][0]["source_note"]
+            original_note = source_note.read_text(encoding="utf-8")
+            frontmatter, _ = ghpf_wiki.parse_frontmatter(original_note)
+            source_note.write_text(
+                ghpf_wiki.frontmatter_block(frontmatter)
+                + "# Old Source Note\n\n## Summary\n\n- Skip to main content\n- Extraction kind: `web-page`\n\n## Backlinks\n\n- [[Existing Manual Link]]\n",
+                encoding="utf-8",
+            )
+
+            curated = self.run_cli("source-curate", "--vault", str(vault), source_note.relative_to(vault).as_posix())
+
+            self.assertEqual(curated.returncode, 0, curated.stderr)
+            result = json.loads(curated.stdout)
+            self.assertEqual(result["updated_count"], 1)
+            note = source_note.read_text(encoding="utf-8")
+            self.assertIn("## Key Claims", note)
+            self.assertIn("Agent evaluation should test", note)
+            self.assertIn("[[Existing Manual Link]]", note)
+            self.assertNotIn("Skip to main content", note)
 
 
 if __name__ == "__main__":

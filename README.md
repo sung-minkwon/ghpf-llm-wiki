@@ -213,6 +213,13 @@ Refresh the human-readable overview, index, and domain entrypoints after adding 
 python3 scripts/ghpf_wiki.py curate --vault ./my-vault
 ```
 
+Regenerate older source notes that still look like extraction logs instead of concise source cards:
+
+```bash
+python3 scripts/ghpf_wiki.py source-curate --vault ./my-vault wiki/sources/paper-notes.md
+python3 scripts/ghpf_wiki.py source-curate --vault ./my-vault --all-sources
+```
+
 Run cross-machine maintenance and Graphify threshold checks:
 
 ```bash

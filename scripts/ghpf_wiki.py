@@ -425,21 +425,239 @@ def external_original_record(source_url: str) -> dict:
     return {"kind": "url", "source": source_url, "source_url": source_url}
 
 
-def summarize_text(text: str, max_lines: int = 12) -> list[str]:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+BOILERPLATE_LINE_PATTERNS = [
+    r"^original source:",
+    r"^extraction kind:",
+    r"^extracted at:",
+    r"^extraction warnings$",
+    r"^extracted text$",
+    r"^skip to main content$",
+    r"^learn about arxiv",
+    r"^we gratefully acknowledge support",
+    r"^help \| advanced search$",
+    r"^all fields title author abstract",
+    r"^quick links$",
+    r"^login$",
+    r"^help pages$",
+    r"^about$",
+    r"^contact$",
+    r"^subscribe$",
+    r"^copyright$",
+    r"^privacy policy$",
+    r"^web accessibility assistance$",
+    r"^arxiv operational status$",
+    r"^bibliographic explorer",
+    r"^connected papers",
+    r"^litmaps",
+    r"^scite",
+    r"^replicate",
+    r"^spaces",
+    r"^hugging face",
+    r"^image candidates$",
+]
+
+
+def normalize_sentence(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip(" -\t")
+
+
+def is_boilerplate_line(line: str) -> bool:
+    lowered = normalize_sentence(re.sub(r"^#+\s*", "", line)).lower()
+    if not lowered:
+        return True
+    if lowered in {"none", "go", "search", "view pdf", "html (experimental)", "tex source", "view license"}:
+        return True
+    return any(re.search(pattern, lowered) for pattern in BOILERPLATE_LINE_PATTERNS)
+
+
+def content_lines(text: str, max_lines: int | None = None) -> list[str]:
+    lines = []
+    seen = set()
+    for raw_line in text.splitlines():
+        line = normalize_sentence(raw_line)
+        if is_boilerplate_line(line):
+            continue
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(line)
+        if max_lines and len(lines) >= max_lines:
+            break
     if not lines:
         return ["No readable text extracted."]
-    return lines[:max_lines]
+    return lines
+
+
+def summarize_text(text: str, max_lines: int = 12) -> list[str]:
+    return content_lines(text, max_lines=max_lines)
+
+
+def split_sentences(text: str, limit: int = 5) -> list[str]:
+    normalized = normalize_sentence(text)
+    if not normalized:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9가-힣])", normalized)
+    sentences = [part.strip() for part in parts if len(part.strip()) >= 30]
+    if len(sentences) <= 1 and len(normalized) > 260:
+        chunks = [normalized[i : i + 240].strip() for i in range(0, min(len(normalized), 900), 240)]
+        sentences = [chunk for chunk in chunks if chunk]
+    return sentences[:limit]
+
+
+def extract_source_metadata(text: str) -> dict:
+    normalized = re.sub(r"\s+", " ", text)
+    metadata = {}
+    patterns = {
+        "title": r"Title:\s*(.+?)(?:\s+Authors:|\s+Author:|\s+View a PDF|$)",
+        "authors": r"Authors?:\s*(.+?)(?:\s+View a PDF|\s+Abstract:|$)",
+        "abstract": r"Abstract:\s*(.+?)(?:\s+Subjects:|\s+Cite as:|\s+Focus to learn more|$)",
+        "subjects": r"Subjects:\s*(.+?)(?:\s+Cite as:|\s+Focus to learn more|$)",
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            metadata[key] = normalize_sentence(match.group(1))
+    doi_match = re.search(r"https://doi\.org/[^\s)]+", normalized, flags=re.IGNORECASE)
+    if doi_match:
+        metadata["doi"] = doi_match.group(0).rstrip(".,")
+    arxiv_match = re.search(r"arXiv:\s*([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)", normalized, flags=re.IGNORECASE)
+    if arxiv_match:
+        metadata["arxiv"] = arxiv_match.group(1)
+    return metadata
+
+
+def human_summary_points(text: str, max_points: int = 5) -> list[str]:
+    metadata = extract_source_metadata(text)
+    abstract = metadata.get("abstract", "")
+    if abstract:
+        points = split_sentences(abstract, limit=max_points)
+        if points:
+            return points
+    return content_lines(text, max_lines=max_points)
+
+
+def human_key_claims(text: str, max_points: int = 5) -> list[str]:
+    metadata = extract_source_metadata(text)
+    abstract = metadata.get("abstract", "")
+    candidates = split_sentences(abstract, limit=8) if abstract else content_lines(text, max_lines=12)
+    priority_words = ("challenge", "provide", "review", "categorize", "identify", "introduce", "evaluate", "measure", "improve", "framework", "method", "metric", "limitation", "future")
+    ranked = sorted(candidates, key=lambda item: any(word in item.lower() for word in priority_words), reverse=True)
+    return ranked[:max_points] or ["No clear claims extracted; review the preserved source before relying on this note."]
+
+
+def source_relevance_points(text: str, terms: list[str], max_points: int = 4) -> list[str]:
+    lowered = text.lower()
+    points = []
+    if "agent" in lowered and "generaliz" in lowered:
+        points.append("Use this source when evaluating whether an LLM agent still works after the task, environment, instruction, or domain changes.")
+    if "benchmark" in lowered or "evaluation" in lowered or "metric" in lowered:
+        points.append("Use this source to design benchmark splits, evaluation dimensions, and metrics instead of judging only in-distribution examples.")
+    if "tool" in lowered or "memory" in lowered or "perception" in lowered:
+        points.append("Use this source when separating backbone LLM behavior from agent components such as tools, memory, perception, and environment interaction.")
+    if terms:
+        points.append("Relevant extracted terms: " + ", ".join(titleize_slug(term) for term in terms[:6]) + ".")
+    return points[:max_points] or ["Review this source for reusable claims, methods, limitations, or domain-specific evidence."]
+
+
+def source_limitations(text: str, original_ref: str = "") -> list[str]:
+    metadata = extract_source_metadata(text)
+    limitations = []
+    if "web-page" in text[:1200].lower() or original_ref.endswith(".html"):
+        limitations.append("This note was generated from a web or HTML extraction; check the preserved original or PDF before quoting detailed results.")
+    if not metadata.get("abstract"):
+        limitations.append("No clean abstract was detected, so the summary may rely on the first content-bearing lines.")
+    if "survey" in (metadata.get("title", "") + " " + text[:500]).lower():
+        limitations.append("This is a survey-style source; treat it as framing and taxonomy evidence unless a specific experiment is cited.")
+    return limitations or ["No extraction-specific limitation detected, but claims should still be checked against the preserved source."]
+
+
+def build_source_note_body(
+    title: str,
+    source_rel: str,
+    digest: str,
+    text: str,
+    terms: list[str],
+    original_ref: str = "",
+    original_sha256: str = "",
+    evidence_index_rel: str = "",
+    evidence_record_count: int | str = 0,
+    key_links: str | None = None,
+) -> str:
+    metadata = extract_source_metadata(text)
+    term_links = key_links if key_links is not None else " ".join(f"[[{titleize_slug(term)}]]" for term in terms[:8])
+    summary = human_summary_points(text)
+    claims = human_key_claims(text)
+    relevance = source_relevance_points(text, terms)
+    limitations = source_limitations(text, original_ref=original_ref)
+    coverage = [
+        f"Source note compiled from `{source_rel}`.",
+        *( [f"Preserved original: `{original_ref}`."] if original_ref else [] ),
+        *( [f"Original SHA256: `{original_sha256}`."] if original_sha256 else [] ),
+        *( [f"Evidence index: `{evidence_index_rel}` ({evidence_record_count} records)."] if evidence_index_rel else [] ),
+        *( [f"Detected title: {metadata['title']}."] if metadata.get("title") else [] ),
+        *( [f"Detected authors: {metadata['authors']}."] if metadata.get("authors") else [] ),
+        *( [f"Detected DOI: {metadata['doi']}."] if metadata.get("doi") else [] ),
+    ]
+    return "\n".join(
+        [
+            f"# {title}",
+            "",
+            f"Source: `{source_rel}`",
+            f"SHA256: `{digest}`",
+            *( [f"Original: `{original_ref}`"] if original_ref else [] ),
+            *( [f"Original SHA256: `{original_sha256}`"] if original_sha256 else [] ),
+            *( [f"Evidence index: `{evidence_index_rel}` ({evidence_record_count} records)"] if evidence_index_rel else [] ),
+            "",
+            "## Summary",
+            "",
+            *[f"- {line}" for line in summary],
+            "",
+            "## Key Claims",
+            "",
+            *[f"- {line}" for line in claims],
+            "",
+            "## Relevance To Current Work",
+            "",
+            *[f"- {line}" for line in relevance],
+            "",
+            "## Limitations",
+            "",
+            *[f"- {line}" for line in limitations],
+            "",
+            "## Key Links",
+            "",
+            term_links or "No key terms extracted.",
+            "",
+            "## Source Coverage",
+            "",
+            *[f"- [x] {line}" for line in coverage],
+            "",
+            "## Open Questions",
+            "",
+            "- Which claims should be promoted into durable concept, entity, synthesis, or domain pages?",
+            "- Which claims need direct evidence checks before reuse?",
+            "",
+        ]
+    )
 
 
 def extract_terms(text: str, limit: int = 12) -> list[str]:
-    words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}|[가-힣]{2,}", text)
+    metadata = extract_source_metadata(text)
+    term_text = " ".join(
+        value for value in (metadata.get("title", ""), metadata.get("abstract", ""), metadata.get("subjects", "")) if value
+    )
+    if not term_text:
+        term_text = "\n".join(content_lines(text))
+    words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}|[가-힣]{2,}", term_text)
     stop = {
         "about",
         "after",
         "also",
+        "arxiv",
         "best",
         "compare",
+        "contact",
         "create",
         "data",
         "from",
@@ -454,7 +672,9 @@ def extract_terms(text: str, limit: int = 12) -> list[str]:
         "than",
         "that",
         "this",
+        "toggle",
         "useful",
+        "what",
         "when",
         "wiki",
         "will",
@@ -2292,8 +2512,7 @@ def ingest_sources(
         evidence_index_rel = evidence_index_path(vault).relative_to(vault).as_posix() if evidence_record_count else ""
         source_note = vpath(vault, "wiki/sources") / f"{slugify(raw_path.stem)}.md"
         terms = extract_terms(text)
-        summary = summarize_text(text)
-        term_links = " ".join(f"[[{titleize_slug(term)}]]" for term in terms[:8])
+        summary = human_summary_points(text)
         key_points = source_key_points(text)
 
         source_note.parent.mkdir(parents=True, exist_ok=True)
@@ -2313,34 +2532,16 @@ def ingest_sources(
             frontmatter["evidence_records"] = evidence_record_count
         source_note.write_text(
             frontmatter_block(frontmatter)
-            +
-            "\n".join(
-                [
-                    f"# {title}",
-                    "",
-                    f"Source: `{source_rel}`",
-                    f"SHA256: `{digest}`",
-                    *( [f"Original: `{original_ref}`"] if original_ref else [] ),
-                    *( [f"Original SHA256: `{original['sha256']}`"] if original.get("sha256") else [] ),
-                    *( [f"Evidence index: `{evidence_index_rel}` ({evidence_record_count} records)"] if evidence_index_rel else [] ),
-                    "",
-                    "## Summary",
-                    "",
-                    *[f"- {line}" for line in summary],
-                    "",
-                    "## Key Links",
-                    "",
-                    term_links or "No key terms extracted.",
-                    "",
-                    "## Source Coverage",
-                    "",
-                    *[f"- [x] {line}" for line in key_points],
-                    "",
-                    "## Open Questions",
-                    "",
-                    "- What should be merged into durable concept or entity pages?",
-                    "",
-                ]
+            + build_source_note_body(
+                title,
+                source_rel,
+                digest,
+                text,
+                terms,
+                original_ref=original_ref,
+                original_sha256=original.get("sha256", ""),
+                evidence_index_rel=evidence_index_rel,
+                evidence_record_count=evidence_record_count,
             ),
             encoding="utf-8",
         )
@@ -2427,6 +2628,159 @@ def ingest_sources(
     manifest["generated_pages"] = sorted(set(manifest.get("generated_pages", [])))
     save_manifest(vault, manifest)
     return {"ingested": ingested, "skipped": skipped, "extracted": extracted, "auto_syntheses": auto_syntheses}
+
+
+def extract_preserved_sections(body: str, section_names: tuple[str, ...] = ("Backlinks",)) -> list[str]:
+    wanted = {name.strip().lower().lstrip("#").strip() for name in section_names}
+    preserved_by_name: dict[str, list[str]] = {name: [] for name in wanted}
+    current_name = ""
+    current_lines: list[str] = []
+
+    def remember_section(name: str, lines: list[str]) -> None:
+        if name not in wanted or not lines:
+            return
+        for line in lines[1:]:
+            cleaned = line.rstrip()
+            if cleaned and cleaned not in preserved_by_name[name]:
+                preserved_by_name[name].append(cleaned)
+
+    for line in body.splitlines():
+        match = re.match(r"^(##)\s+(.+?)\s*$", line)
+        if match:
+            remember_section(current_name, current_lines)
+            current_name = match.group(2).strip().lower()
+            current_lines = [line]
+            continue
+        if current_lines:
+            current_lines.append(line)
+    remember_section(current_name, current_lines)
+    preserved = []
+    for name in section_names:
+        key = name.strip().lower().lstrip("#").strip()
+        lines = preserved_by_name.get(key) or []
+        if lines:
+            heading = name if name.startswith("##") else f"## {name.strip()}"
+            preserved.append(heading + "\n\n" + "\n".join(lines).rstrip())
+    return preserved
+
+
+def source_note_title(path: Path, frontmatter: dict, body: str) -> str:
+    aliases = frontmatter.get("aliases")
+    if isinstance(aliases, list) and aliases:
+        return str(aliases[0])
+    for line in body.splitlines():
+        if line.startswith("# "):
+            title = line[2:].strip()
+            if title:
+                return title
+    return page_title_from_path(path)
+
+
+def source_curate(vault: Path, pages: list[str], all_sources: bool = False) -> dict:
+    vault = vault.expanduser()
+    targets: list[Path] = []
+    if all_sources:
+        source_root = vpath(vault, "wiki/sources")
+        if source_root.exists():
+            targets.extend(sorted(source_root.rglob("*.md")))
+    for page in pages:
+        targets.append(vault_relative_path(vault, page))
+
+    unique_targets = []
+    seen = set()
+    for target in targets:
+        key = target.resolve() if target.exists() else target.absolute()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_targets.append(target)
+
+    updated = []
+    skipped = []
+    for page in unique_targets:
+        if not page.exists() or not page.is_file():
+            skipped.append({"page": str(page), "reason": "missing_or_not_file"})
+            continue
+        content = page.read_text(encoding="utf-8", errors="ignore")
+        frontmatter, body = parse_frontmatter(content)
+        source_rel = str(frontmatter.get("source") or "").strip()
+        if not source_rel:
+            match = re.search(r"^Source:\s*`([^`]+)`", body, flags=re.MULTILINE)
+            source_rel = match.group(1).strip() if match else ""
+        if not source_rel:
+            skipped.append({"page": page.relative_to(vault).as_posix() if layout.path_is_relative_to(page, vault) else page.as_posix(), "reason": "missing_source_reference"})
+            continue
+        raw_path = vault_relative_path(vault, source_rel)
+        if not raw_path.exists() or not raw_path.is_file():
+            skipped.append({"page": page.relative_to(vault).as_posix() if layout.path_is_relative_to(page, vault) else page.as_posix(), "source": source_rel, "reason": "source_missing_or_not_file"})
+            continue
+
+        text = read_text(raw_path)
+        title = source_note_title(page, frontmatter, body)
+        try:
+            actual_source_rel = raw_path.relative_to(vault).as_posix()
+        except ValueError:
+            actual_source_rel = raw_path.as_posix()
+        digest = sha256_file(raw_path)
+        terms = extract_terms(text)
+        existing_links, candidate_terms = existing_wikilinks_for_terms(vault, terms)
+        key_link_parts = []
+        if existing_links:
+            key_link_parts.append(" ".join(existing_links))
+        if candidate_terms:
+            key_link_parts.append("Candidate terms: " + ", ".join(candidate_terms[:8]) + ".")
+        key_links = " ".join(key_link_parts)
+        original_ref = str(frontmatter.get("original") or "")
+        original_sha256 = str(frontmatter.get("original_sha256") or "")
+        evidence_index_rel = str(frontmatter.get("evidence_index") or "")
+        evidence_record_count = frontmatter.get("evidence_records") or ""
+        if not evidence_index_rel:
+            linked_evidence = evidence_records_for_source_path(vault, raw_path)
+            if linked_evidence:
+                evidence_index_rel = evidence_index_path(vault).relative_to(vault).as_posix()
+                evidence_record_count = len(linked_evidence)
+                original = linked_evidence[0].get("original") or {}
+                original_ref = original_ref or original.get("path") or original.get("source_url") or original.get("source") or ""
+                original_sha256 = original_sha256 or original.get("sha256") or ""
+
+        new_frontmatter = dict(frontmatter)
+        new_frontmatter.setdefault("tags", ["ghpf/source"])
+        new_frontmatter["source"] = actual_source_rel
+        new_frontmatter["sha256"] = digest
+        new_frontmatter.setdefault("aliases", [title])
+        if original_ref:
+            new_frontmatter["original"] = original_ref
+        if original_sha256:
+            new_frontmatter["original_sha256"] = original_sha256
+        if evidence_index_rel:
+            new_frontmatter["evidence_index"] = evidence_index_rel
+        if evidence_record_count:
+            new_frontmatter["evidence_records"] = evidence_record_count
+
+        preserved = extract_preserved_sections(body)
+        new_body = build_source_note_body(
+            title,
+            actual_source_rel,
+            digest,
+            text,
+            terms,
+            original_ref=original_ref,
+            original_sha256=original_sha256,
+            evidence_index_rel=evidence_index_rel,
+            evidence_record_count=evidence_record_count,
+            key_links=key_links,
+        )
+        if preserved:
+            new_body = new_body.rstrip() + "\n\n" + "\n\n".join(preserved) + "\n"
+        page.write_text(frontmatter_block(new_frontmatter) + new_body, encoding="utf-8")
+        updated.append(page.relative_to(vault).as_posix() if layout.path_is_relative_to(page, vault) else page.as_posix())
+
+    if updated:
+        manifest = load_manifest(vault)
+        manifest.setdefault("operations", []).append({"type": "source_curate", "time": now_iso(), "pages": updated})
+        save_manifest(vault, manifest)
+        append_log(vault, f"curated {len(updated)} source note(s) into human-readable summaries.")
+    return {"updated": updated, "updated_count": len(updated), "skipped": skipped}
 
 
 def graph_view_filter(vault: Path, view: str) -> str:
@@ -3946,6 +4300,25 @@ def figure_export_command(vault: Path, design: str | None, domain: str = "auto",
     return result
 
 
+def resolve_wikilink_target_path(vault: Path, target: str, page_by_title: dict[str, Path]) -> Path | None:
+    title = target.strip()
+    if not title:
+        return None
+    if title.lower() in page_by_title:
+        return page_by_title[title.lower()]
+    candidates = [title]
+    if not Path(title).suffix:
+        candidates.append(f"{title}.md")
+    for candidate in candidates:
+        direct = vault / candidate
+        if direct.exists() and direct.is_file():
+            return direct
+        resolved = vpath(vault, candidate)
+        if resolved.exists() and resolved.is_file():
+            return resolved
+    return None
+
+
 def lint_wiki(vault: Path) -> dict:
     vault = vault.expanduser()
     pages = markdown_files(vault)
@@ -3965,7 +4338,10 @@ def lint_wiki(vault: Path) -> dict:
         for target in WIKILINK_RE.findall(text):
             title = target.strip()
             linked_targets.add(title.lower())
-            if title.lower() not in page_by_title:
+            target_path = resolve_wikilink_target_path(vault, title, page_by_title)
+            if target_path:
+                linked_targets.add(target_path.stem.lower())
+            else:
                 broken_links.append({"page": page.relative_to(vault).as_posix(), "target": title})
 
     for page in pages:
@@ -4068,6 +4444,11 @@ def main() -> int:
     curate_p = sub.add_parser("curate")
     curate_p.add_argument("--vault", default=".")
     curate_p.add_argument("--force", action="store_true", help="Regenerate managed human-readable entrypoint pages even when they already exist.")
+
+    source_curate_p = sub.add_parser("source-curate")
+    source_curate_p.add_argument("--vault", default=".")
+    source_curate_p.add_argument("--all-sources", action="store_true", help="Regenerate every wiki source note into the current human-readable template.")
+    source_curate_p.add_argument("pages", nargs="*", help="Wiki source-note paths to regenerate.")
 
     extract_p = sub.add_parser("extract")
     extract_p.add_argument("--vault", default=".")
@@ -4240,6 +4621,11 @@ def main() -> int:
             return 1
     elif args.command == "curate":
         print(json.dumps(curate_wiki(Path(args.vault), force=args.force), ensure_ascii=False, indent=2))
+    elif args.command == "source-curate":
+        if not args.pages and not args.all_sources:
+            print(json.dumps({"updated": [], "updated_count": 0, "skipped": [{"reason": "no_pages"}]}, ensure_ascii=False, indent=2))
+            return 1
+        print(json.dumps(source_curate(Path(args.vault), args.pages, all_sources=args.all_sources), ensure_ascii=False, indent=2))
     elif args.command == "ingest":
         result = ingest_sources(
             Path(args.vault),
