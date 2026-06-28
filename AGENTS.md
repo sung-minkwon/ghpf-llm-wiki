@@ -7,6 +7,7 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 - For a fresh clone, run `./install.sh` first. It creates `./my-vault`, installs project skills for Codex/Claude Code/Antigravity, checks capabilities, runs lint, and writes an install report.
 - New vaults use a Johnny.Decimal-style physical layout by default, such as `300. wiki/310. sources`. Commands and docs may still refer to logical paths such as `wiki/sources`; resolve them through `ghpf.config.json` or the GHFP CLI.
 - Treat logical `wiki/` as the canonical, human-readable Markdown wiki.
+- Read logical `schema/folder-routing.md` before creating new topic/domain folders or moving canonical wiki notes.
 - Treat logical `graph_imports/` as non-canonical Graphify reference material. Promote durable findings into `wiki/` before relying on them as maintained knowledge.
 - Treat logical `wiki/cards/` as the reusable structure for paper, experiment, and strategy insight work.
 - Treat logical `wiki/cards/figures/` and `wiki/figure-designs/` as the reusable structure for manuscript, experiment, and trading chart figure design.
@@ -16,6 +17,7 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 - Put immutable source copies in logical `raw/`; `_raw/` is supported for Obsidian capture compatibility.
 - Put bulk Graphify intake in logical `raw/graphify_articles/`; normal `ingest` skips that folder.
 - Keep wiki operating rules in logical `schema/AGENTS.md`.
+- Let recurring user-specific work areas grow under logical `wiki/domains/<domain-slug>/` after checking `schema/folder-routing.md`.
 - Put graph, retrieval, context-pack, cache, export, and task-ledger artifacts under logical `swarmvault/`.
 - Do not rewrite user notes broadly. Merge focused changes and preserve provenance.
 - For setup, run `./install.sh` for the default install or `python3 scripts/setup_vault.py --vault <path> --profile auto` for manual setup.

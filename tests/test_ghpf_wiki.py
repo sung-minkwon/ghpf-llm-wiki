@@ -42,6 +42,33 @@ class GhpfWikiTests(unittest.TestCase):
             check=False,
         )
 
+    def run_setup(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "setup_vault.py"), *args],
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    def test_setup_writes_folder_routing_policy_and_domain_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            completed = self.run_setup("--vault", str(vault), "--profile", "mixed", "--json")
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["profile"], "mixed")
+            routing = vault / "002. schema" / "folder-routing.md"
+            domain_root = vault / "300. wiki" / "400. domains"
+
+            self.assertTrue(routing.exists())
+            self.assertTrue(domain_root.exists())
+            content = routing.read_text(encoding="utf-8")
+            self.assertIn("wiki/domains/<domain-slug>/", content)
+            self.assertIn("LLM Agent Checklist", content)
+
     def test_fetch_url_reports_truncation(self):
         _BodyHandler.body = b"0123456789END"
         server = ThreadingHTTPServer(("127.0.0.1", 0), _BodyHandler)

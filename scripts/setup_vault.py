@@ -189,6 +189,7 @@ GHFP commands use logical paths such as `wiki/sources`; the physical Obsidian va
 - `wiki/cards/figures/`: reusable figure design cards.
 - `wiki/figure-designs/`: proposed figure layouts and export plans for manuscripts or strategy reports.
 - `wiki/syntheses/`: query answers and cross-source summaries filed back into the wiki.
+- `wiki/domains/`: LLM-created domain homes for recurring user-specific work areas.
 - `schema/`: wiki operating rules and validation expectations.
 - `graph_imports/`: imported Graphify reference layers. Treat these as useful maps, not canonical notes.
 - `swarmvault/`: graph, hybrid index, context-pack, task-ledger, evaluation, and export sidecar artifacts.
@@ -213,6 +214,106 @@ GHFP commands use logical paths such as `wiki/sources`; the physical Obsidian va
 14. For video or image frame work, preserve sampled frames under `raw/figures/video-frames/` and analysis manifests under `swarmvault/exports/video-frames/`.
 15. Use `maintenance` for cross-machine periodic cleanup and Graphify threshold checks. It stores shared state in `swarmvault/state/maintenance-state.json`.
 16. Keep `wiki/research-profile.md` current. When it has focus axes, `ingest` automatically files candidate updates into `wiki/syntheses/auto-*.md`.
+17. Read `schema/folder-routing.md` before creating new topic folders or moving canonical wiki notes.
+"""
+
+
+def folder_routing_content(profile: str, layout_config: dict) -> str:
+    domains_rel = actual_rel_for(Path("."), "wiki/domains", config=layout_config)
+    sources_rel = actual_rel_for(Path("."), "wiki/sources", config=layout_config)
+    syntheses_rel = actual_rel_for(Path("."), "wiki/syntheses", config=layout_config)
+    return f"""# Folder Routing Policy
+
+Profile: `{profile}`
+
+This file is the human-readable policy that LLM agents should follow when deciding where to store canonical Markdown notes. It is intentionally written in prose so Codex, Claude Code, Claude cowork, and similar filesystem-capable agents can adapt the vault to each user's research topics and work patterns.
+
+## Core Principle
+
+Keep `wiki/` as the canonical human-readable knowledge base. In this vault layout, the domain root resolves to:
+
+- Logical: `wiki/domains/`
+- Physical: `{domains_rel}/`
+
+Use domain folders for recurring subject areas that are meaningful to the user, such as greenhouse irrigation, thesis writing, automatic trading, codebase architecture, or any new long-lived work stream.
+
+## Default Flow
+
+1. Preserve original files under `raw/originals/` and evidence metadata under `evidence/index.jsonl`.
+2. Put first-pass source notes under `wiki/sources/` unless the user explicitly asks for a domain location.
+3. When a source or conversation belongs to an existing domain, add links from the source note to that domain home.
+4. When a reusable synthesis, decision, card, or working note clearly belongs to a domain, file it under `wiki/domains/<domain-slug>/`.
+5. Keep cross-domain summaries in `wiki/syntheses/` when they combine multiple areas.
+6. Update `wiki/index.md` or a local domain index after creating a new domain folder.
+7. Add a short log entry to `wiki/log.md` when creating a new domain.
+
+## When To Create A New Domain
+
+Create a new folder under `wiki/domains/<domain-slug>/` only when at least one of these is true:
+
+- The user directly asks for a new area or folder.
+- The same subject appears across three or more sources, sessions, or tasks.
+- The subject has its own recurring workflow, dataset, experiment, trading strategy, manuscript, client, or codebase.
+- Mixing it into existing folders would make retrieval or review less clear.
+
+Do not create a new domain for one-off notes, small temporary tasks, single files, or synonyms of an existing domain. Use `wiki/sources/` or `wiki/syntheses/` first, then promote later if the area persists.
+
+## Suggested Domain Shape
+
+For a new domain, start small:
+
+```text
+wiki/domains/<domain-slug>/
+  index.md
+  notes/
+  decisions/
+  syntheses/
+```
+
+Add subfolders only when the work pattern justifies them:
+
+```text
+papers/
+experiments/
+figures/
+strategies/
+backtests/
+market-data/
+code/
+datasets/
+```
+
+Prefer clear user-language slugs over generic labels. Examples:
+
+- `greenhouse-irrigation`
+- `thesis-chapter-2`
+- `automatic-trading`
+- `kronos-strategy-research`
+- `lab-fellowship-writing`
+
+## Built-In Areas
+
+The distribution still provides role-based folders:
+
+- Source notes: `{sources_rel}/`
+- Cards: `wiki/cards/`
+- Cross-source syntheses: `{syntheses_rel}/`
+- Research support: `wiki/papers/`, `wiki/methods/`, `wiki/citations/`
+- Trading support: `wiki/trading/`
+- Codebase support: `wiki/codebase/`
+
+Use these when the note's role is more important than its domain. Use `wiki/domains/` when the user's subject area is the main retrieval handle.
+
+## LLM Agent Checklist
+
+Before writing a canonical note:
+
+- Inspect existing folders under `wiki/domains/`.
+- Reuse an existing domain if it matches.
+- Ask only when the domain choice would change the user's workflow materially.
+- If creating a domain, create `index.md` with the purpose, scope, and first related links.
+- Link back to relevant source notes, cards, and syntheses with `[[wikilinks]]`.
+- Keep machine artifacts out of `wiki/domains/`; put exports under `swarmvault/exports/`.
 """
 
 
@@ -297,6 +398,7 @@ def setup_vault(vault: Path, profile: str, sources: list[str], force: bool = Fal
         force=False,
     )
     write_if_missing(resolve_vault_path(vault, "schema/AGENTS.md", config=layout_config), schema_agents_content(profile, layout_config), force=force)
+    write_if_missing(resolve_vault_path(vault, "schema/folder-routing.md", config=layout_config), folder_routing_content(profile, layout_config), force=force)
     root_compatibility = ensure_root_compatibility(vault, layout_config)
     config_payload = {
         "profile": profile,

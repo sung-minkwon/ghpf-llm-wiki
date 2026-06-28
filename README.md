@@ -50,6 +50,7 @@ Examples:
 - `300. wiki/310. sources/` stores source notes.
 - `300. wiki/320. concepts/` stores durable concept notes.
 - `300. wiki/340. cards/341. papers/` stores reusable paper cards.
+- `300. wiki/400. domains/` stores recurring user-specific work areas created by LLM agents from `schema/folder-routing.md`.
 - `003. swarmvault/090. exports/` stores sidecar reports and exports.
 
 The CLI still accepts logical paths such as `wiki/sources` and resolves them through `ghpf.config.json`. Existing configured vaults keep their current layout when `--layout auto` is used. To force the old unnumbered layout for a new vault, run:
@@ -88,6 +89,20 @@ python3 scripts/setup_vault.py --vault ~/obsidian/ghpf --source ~/papers --sourc
 ```
 
 Each vault also gets `wiki/research-profile.md`. Edit that page once to define durable focus axes such as your main research question, experiment targets, trading strategy themes, or codebase concerns. After that, `ingest` automatically appends candidate updates to `wiki/syntheses/auto-*.md` when a new source matches the profile. Automatic updates stay as candidates by default and include confidence, evidence score, matched terms, evidence snippets, and review status.
+
+## LLM-First Folder Routing
+
+Each vault gets `schema/folder-routing.md`, a human-readable policy for filesystem-capable LLM agents. Agents should read it before creating new topic folders or moving canonical wiki notes.
+
+The default rule is conservative:
+
+- keep first-pass source notes in `wiki/sources/`
+- keep cross-source answers in `wiki/syntheses/`
+- create `wiki/domains/<domain-slug>/` only for recurring user-specific work areas
+- create a domain when the user asks, or when the same subject appears across multiple sources, sessions, or tasks
+- add a domain `index.md` and log the reason when a new domain is created
+
+This lets different users grow different vault shapes without changing the distribution code. For example, one user may grow `wiki/domains/greenhouse-irrigation/`, while another grows `wiki/domains/automatic-trading/` or `wiki/domains/client-research/`.
 
 ## Sidecar Commands
 
@@ -245,7 +260,7 @@ python3 scripts/ghpf_wiki.py task finish --vault ./my-vault --title "Test BTC st
 
 ## Design Rule
 
-Keep the configured wiki directory as the human-readable canonical knowledge base. In the decimal layout this is `300. wiki/`; in the classic layout it is `wiki/`. Use the configured originals directory for preserved source artifacts, the configured evidence index for machine-readable evidence locators, and the configured graph imports directory only as an imported Graphify reference layer. Let sidecar tools write only to configured raw/evidence/sidecar/graph/task/export locations unless a human asks for canonical wiki edits.
+Keep the configured wiki directory as the human-readable canonical knowledge base. In the decimal layout this is `300. wiki/`; in the classic layout it is `wiki/`. Use the configured originals directory for preserved source artifacts, the configured evidence index for machine-readable evidence locators, and the configured graph imports directory only as an imported Graphify reference layer. Let sidecar tools write only to configured raw/evidence/sidecar/graph/task/export locations unless a human asks for canonical wiki edits. For recurring user-specific subject areas, follow `schema/folder-routing.md` and grow domain homes under `wiki/domains/`.
 
 ## Quality Loop
 
