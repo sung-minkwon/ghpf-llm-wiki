@@ -19,19 +19,19 @@ cd ghpf-llm-wiki
 ./install.sh
 ```
 
-`./install.sh` runs the default post-clone flow: create `./my-vault` with the decimal folder layout, install Codex/Claude Code/Antigravity project skills, print capabilities, run lint, and write the install report under the configured exports folder.
+`./install.sh` runs the default post-clone flow: create `./my-vault` with the decimal folder layout, install Codex/Claude Code/Antigravity user skills so GHFP Wiki can trigger outside this repo, print capabilities, run lint, and write the install report under the configured exports folder. Use `./install.sh --scope project` when you only want repo-local skill entrypoints.
 
 Manual equivalent:
 
 ```bash
-python3 scripts/bootstrap_install.py --vault ./my-vault --profile auto --agents codex,claude,antigravity
+python3 scripts/bootstrap_install.py --vault ./my-vault --profile auto --agents codex,claude,antigravity --scope user
 ```
 
 Manual step-by-step install:
 
 ```bash
 python3 scripts/setup_vault.py --vault ./my-vault --profile auto
-python3 scripts/install_agents.py --scope project --agents codex,claude,antigravity
+python3 scripts/install_agents.py --scope user --agents codex,claude,antigravity
 python3 scripts/ghpf_wiki.py capabilities --vault ./my-vault
 python3 scripts/ghpf_wiki.py lint --vault ./my-vault
 ```

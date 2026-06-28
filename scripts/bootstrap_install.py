@@ -59,7 +59,7 @@ def main() -> int:
         choices=["auto", "general", "research", "trading", "codebase", "mixed"],
     )
     parser.add_argument("--agents", default="codex,claude,antigravity")
-    parser.add_argument("--scope", choices=["project", "user"], default="project")
+    parser.add_argument("--scope", choices=["project", "user"], default="user", help="Install agent skills globally by default; use project for repo-local skill entrypoints.")
     parser.add_argument("--force", action="store_true", help="Pass --force to setup_vault.py.")
     parser.add_argument("--layout", choices=["auto", "decimal", "classic"], default="auto", help="Folder layout passed to setup_vault.py.")
     parser.add_argument("--json", action="store_true", help="Print the final install report as JSON.")

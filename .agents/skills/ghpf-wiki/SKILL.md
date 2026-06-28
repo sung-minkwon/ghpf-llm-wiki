@@ -36,7 +36,7 @@ For a fresh clone, prefer the one-command install:
 ./install.sh
 ```
 
-This creates `./my-vault`, installs project skills for Codex/Claude Code/Antigravity, checks capabilities, runs lint, and writes `my-vault/swarmvault/exports/install-report.json`.
+This creates `./my-vault`, installs user-level skills for Codex/Claude Code/Antigravity so GHFP Wiki can trigger outside this repo, checks capabilities, runs lint, and writes `my-vault/swarmvault/exports/install-report.json`. Use `./install.sh --scope project` only for repo-local skill entrypoints.
 
 Run:
 

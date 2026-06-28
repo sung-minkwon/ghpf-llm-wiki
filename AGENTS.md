@@ -4,7 +4,7 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 
 ## Operating Rules
 
-- For a fresh clone, run `./install.sh` first. It creates `./my-vault`, installs project skills for Codex/Claude Code/Antigravity, checks capabilities, runs lint, and writes an install report.
+- For a fresh clone, run `./install.sh` first. It creates `./my-vault`, installs user-level skills for Codex/Claude Code/Antigravity so GHFP Wiki can trigger outside this repo, checks capabilities, runs lint, and writes an install report. Use `./install.sh --scope project` only for repo-local skill entrypoints.
 - New vaults use a Johnny.Decimal-style physical layout by default, such as `300. wiki/310. sources`. Commands and docs may still refer to logical paths such as `wiki/sources`; resolve them through `ghpf.config.json` or the GHFP CLI.
 - Treat logical `wiki/` as the canonical, human-readable Markdown wiki.
 - Read logical `schema/folder-routing.md` before creating new topic/domain folders or moving canonical wiki notes.
