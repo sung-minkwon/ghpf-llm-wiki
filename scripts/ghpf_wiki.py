@@ -11,6 +11,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import urllib.parse
 import urllib.request
@@ -19,7 +20,10 @@ from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from pathlib import Path
 
-import vault_layout as layout
+try:
+    import vault_layout as layout
+except ModuleNotFoundError:  # pragma: no cover - used when installed as a package entry point.
+    from . import vault_layout as layout
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 QUALITY_REQUIRED_FIELDS = ["tags", "source", "created", "aliases"]
@@ -52,6 +56,7 @@ VECTOR_DIMS = 256
 IMAGE_CONTEXT_WORDS = {"chart", "graph", "plot", "figure", "diagram", "architecture", "flow", "screenshot", "canvas", "svg"}
 IMAGE_SKIP_WORDS = {"ads", "doubleclick", "googlesyndication", "tracker", "pixel", "icon", "avatar", "logo", "social", "share", "nav", "menu", "header", "footer"}
 BLOCKED_PDF_DISCOVERY_HOST_PARTS = {"sci-hub", "scihub", "libgen", "z-lib", "zlibrary"}
+NON_FAILURE_SKIP_REASONS = {"already_ingested"}
 
 
 def slugify(text: str) -> str:
@@ -76,6 +81,10 @@ def reference_markdown_files(vault: Path) -> list[Path]:
 
 def is_retrieval_page(path: Path) -> bool:
     return path.name not in NON_RETRIEVAL_PAGE_NAMES
+
+
+def has_failed_skips(result: dict) -> bool:
+    return any(item.get("reason") not in NON_FAILURE_SKIP_REASONS for item in result.get("skipped", []))
 
 
 def find_obsidian_vaults(root: Path, max_depth: int = 3) -> list[Path]:
@@ -1034,7 +1043,9 @@ def prepare_frame_source(vault: Path, source_value: str, every_seconds: float, m
         frames = extract_video_frames(video_path, root, every_seconds=every_seconds, max_frames=max_frames)
         return run_id, title, root, frames, warnings, original
     if is_url(value):
-        body, content_type = fetch_url(value, max_bytes=100_000_000)
+        body, content_type, truncated = fetch_url(value, max_bytes=100_000_000)
+        if truncated:
+            warnings.append(fetch_truncated_warning(value, 100_000_000, len(body)))
         suffix = Path(urllib.parse.urlparse(value).path).suffix.lower()
         title = page_title_from_path(Path(urllib.parse.urlparse(value).path or "remote-video"))
         original = preserve_original_bytes(vault, value, body, suffix or ".bin", source_url=value, content_type=content_type)
@@ -1421,10 +1432,18 @@ def decode_response_body(body: bytes, content_type: str) -> str:
     return body.decode(encoding, errors="ignore")
 
 
-def fetch_url(url: str, max_bytes: int = 10_000_000) -> tuple[bytes, str]:
+def fetch_truncated_warning(url: str, max_bytes: int, body_len: int) -> str:
+    return f"URL fetch truncated at {body_len} bytes (limit {max_bytes}): {url}"
+
+
+def fetch_url(url: str, max_bytes: int = 10_000_000) -> tuple[bytes, str, bool]:
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 GHFP-LLM-Wiki/1.0"})
     with urllib.request.urlopen(request, timeout=30) as response:
-        return response.read(max_bytes), response.headers.get("content-type", "")
+        body = response.read(max_bytes + 1)
+        truncated = len(body) > max_bytes
+        if truncated:
+            body = body[:max_bytes]
+        return body, response.headers.get("content-type", ""), truncated
 
 
 def fetch_url_with_playwright(url: str) -> tuple[str, list[str]]:
@@ -1442,7 +1461,7 @@ with sync_playwright() as p:
     browser.close()
 print(json.dumps(result, ensure_ascii=False))
 """
-    result = subprocess.run(["python3", "-c", script, url], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=60)
+    result = subprocess.run([sys.executable, "-c", script, url], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=60)
     if result.returncode != 0:
         raise RuntimeError(f"playwright fallback failed: {result.stderr.strip()[:300]}")
     data = json.loads(result.stdout)
@@ -1467,7 +1486,9 @@ def fetch_url_with_deepcloak(url: str) -> tuple[str, list[str]]:
 def fetch_web_content(url: str) -> tuple[bytes, str, list[str]]:
     warnings = []
     try:
-        body, content_type = fetch_url(url)
+        body, content_type, truncated = fetch_url(url)
+        if truncated:
+            warnings.append(fetch_truncated_warning(url, 10_000_000, len(body)))
         return body, content_type, warnings
     except Exception as exc:
         warnings.append(f"urllib fetch failed: {exc}")
@@ -1567,7 +1588,9 @@ def openalex_public_pdf_candidates(doi: str) -> tuple[list[dict], list[str]]:
     encoded = urllib.parse.quote(doi, safe="")
     url = f"https://api.openalex.org/works/https://doi.org/{encoded}"
     try:
-        body, _ = fetch_url(url, max_bytes=5_000_000)
+        body, _, truncated = fetch_url(url, max_bytes=5_000_000)
+        if truncated:
+            warnings.append(fetch_truncated_warning(url, 5_000_000, len(body)))
         data = json.loads(body.decode("utf-8", errors="ignore"))
     except Exception as exc:
         return [], [f"OpenAlex OA PDF lookup failed for DOI {doi}: {exc}"]
@@ -1658,10 +1681,12 @@ def try_public_pdf_discovery(vault: Path, source_url: str, html_text: str, base_
         pdf_url = candidate["url"]
         reason = candidate.get("reason", "unknown")
         try:
-            body, content_type = fetch_url(pdf_url, max_bytes=60_000_000)
+            body, content_type, truncated = fetch_url(pdf_url, max_bytes=60_000_000)
         except Exception as exc:
             warnings.append(f"Public PDF candidate fetch failed ({reason}): {pdf_url} :: {exc}")
             continue
+        if truncated:
+            warnings.append(fetch_truncated_warning(pdf_url, 60_000_000, len(body)))
         if is_pdf_response(pdf_url, content_type, body):
             selected_warnings = base_warnings + warnings + [f"public_pdf_selected: {reason} {pdf_url}"]
             return extract_url_pdf_result(vault, source_url, pdf_url, body, content_type, selected_warnings, "public-url-pdf"), warnings
@@ -2230,6 +2255,7 @@ def ingest_sources(
         if digest in known_hashes:
             skipped.append({"source": str(source), "reason": "already_ingested"})
             continue
+        known_hashes.add(digest)
 
         text = read_text(raw_path)
         title = page_title_from_path(raw_path)
@@ -2881,7 +2907,7 @@ def command_available(command: str) -> bool:
 
 def python_module_available(module: str) -> bool:
     result = subprocess.run(
-        ["python3", "-c", f"import {module}"],
+        [sys.executable, "-c", f"import {module}"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
@@ -3894,7 +3920,7 @@ def figure_export_command(vault: Path, design: str | None, domain: str = "auto",
     script_path.write_text(matplotlib_script(resolved_domain, figure_name), encoding="utf-8")
     result = {"domain": resolved_domain, "script": script_path.relative_to(vault).as_posix(), "out_dir": out_dir.relative_to(vault).as_posix(), "ran": False, "outputs": []}
     if run:
-        cmd = ["python3", str(script_path), "--domain", resolved_domain, "--out-dir", str(out_dir), "--name", figure_name]
+        cmd = [sys.executable, str(script_path), "--domain", resolved_domain, "--out-dir", str(out_dir), "--name", figure_name]
         if data:
             cmd.extend(["--csv", str(Path(data).expanduser())])
         completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=60)
@@ -4194,22 +4220,21 @@ def main() -> int:
                 max_auto_notes=args.max_auto_notes,
             )
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        if has_failed_skips(result) or has_failed_skips(result.get("ingest", {})):
+            return 1
     elif args.command == "ingest":
-        print(
-            json.dumps(
-                ingest_sources(
-                    Path(args.vault),
-                    args.sources,
-                    move=args.move,
-                    auto_synthesis=not args.no_auto_synthesis,
-                    auto_promote=args.auto_promote,
-                    min_evidence_score=args.min_evidence_score,
-                    max_auto_notes=args.max_auto_notes,
-                ),
-                ensure_ascii=False,
-                indent=2,
-            )
+        result = ingest_sources(
+            Path(args.vault),
+            args.sources,
+            move=args.move,
+            auto_synthesis=not args.no_auto_synthesis,
+            auto_promote=args.auto_promote,
+            min_evidence_score=args.min_evidence_score,
+            max_auto_notes=args.max_auto_notes,
         )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if has_failed_skips(result):
+            return 1
     elif args.command == "lint":
         report = lint_wiki(Path(args.vault))
         print(json.dumps(report, ensure_ascii=False, indent=2))

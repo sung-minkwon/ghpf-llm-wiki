@@ -1,0 +1,3 @@
+# GHFP LLM Wiki has no mandatory third-party runtime dependencies.
+# Optional extractors and automation tools are detected at runtime by:
+#   python scripts/ghpf_wiki.py capabilities --vault <vault>

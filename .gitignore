@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+*.egg-info/
 .DS_Store
 Thumbs.db
 .env
@@ -10,4 +11,3 @@ ghpf.config.local.json
 .obsidian/cache/
 swarmvault/state/retrieval/
 swarmvault/state/embeddings/
-
