@@ -136,13 +136,16 @@ Promotion creates or appends `wiki/syntheses/stable-*.md`. Use it for reviewed o
 Extract PDF, web page, local HTML, Office/HWP documents, or YouTube transcript sources into Markdown, then ingest them:
 
 ```bash
-python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest ./paper.pdf
-python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest ./report.docx
-python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest ./korean-document.hwp
-python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest https://example.com/article
-python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest https://doi.org/10.xxxx/example
-python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest https://www.youtube.com/watch?v=<id>
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest --ocr-provider auto ./paper.pdf
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest --ocr-provider auto ./report.docx
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest --ocr-provider auto ./korean-document.hwp
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest --ocr-provider auto ./chart-or-scan.png
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest --ocr-provider auto https://example.com/article
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest --ocr-provider auto https://doi.org/10.xxxx/example
+python3 scripts/ghpf_wiki.py extract --vault ./my-vault --ingest --ocr-provider auto https://www.youtube.com/watch?v=<id>
 ```
+
+`--ocr-provider auto` lets the active agent use native vision OCR for direct images, content-bearing HTML images, and scanned or text-poor PDF pages. On Codex this uses `codex exec --image`; `--ocr-model <model>` can pin the OCR model. Use `--ocr-provider none` only when image/PDF OCR should be intentionally skipped.
 
 For paper landing pages and DOI URLs, `extract` first tries the page itself. If the URL is not already a PDF, it looks for public PDF links in scholarly HTML metadata (`citation_pdf_url`, PDF anchors) and OpenAlex open-access locations. When a public PDF is found, GHFP downloads that PDF into `raw/sources/downloads/`, preserves it under `raw/originals/`, extracts page-level evidence, and ingests it with the source URL as provenance. It deliberately does not bypass paywalls or use piracy mirrors such as Sci-Hub, LibGen, or Z-Library; when no public PDF is available, it falls back to storing the web page content and discovery warnings.
 

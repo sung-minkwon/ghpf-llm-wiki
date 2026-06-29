@@ -46,12 +46,13 @@ INTERNAL_RAW_PREFIXES = {
     ("raw", "sources", "extracted"),
     ("raw", "sources", "downloads"),
     ("raw", "figures", "video-frames"),
+    ("raw", "figures", "pdf-ocr"),
 }
 TEXT_SOURCE_SUFFIXES = {".md", ".txt", ".csv", ".json", ".yaml", ".yml"}
 OFFICE_SOURCE_SUFFIXES = {".docx", ".pptx", ".xlsx", ".xls", ".hwp", ".hwpx", ".hwpml"}
-EXTRACTABLE_SUFFIXES = TEXT_SOURCE_SUFFIXES | {".pdf", ".html", ".htm"} | OFFICE_SOURCE_SUFFIXES
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+EXTRACTABLE_SUFFIXES = TEXT_SOURCE_SUFFIXES | {".pdf", ".html", ".htm"} | OFFICE_SOURCE_SUFFIXES | IMAGE_SUFFIXES
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s\"<>]+", re.IGNORECASE)
 VECTOR_DIMS = 256
@@ -59,6 +60,11 @@ IMAGE_CONTEXT_WORDS = {"chart", "graph", "plot", "figure", "diagram", "architect
 IMAGE_SKIP_WORDS = {"ads", "doubleclick", "googlesyndication", "tracker", "pixel", "icon", "avatar", "logo", "social", "share", "nav", "menu", "header", "footer"}
 BLOCKED_PDF_DISCOVERY_HOST_PARTS = {"sci-hub", "scihub", "libgen", "z-lib", "zlibrary"}
 NON_FAILURE_SKIP_REASONS = {"already_ingested"}
+AGENT_OCR_PROVIDERS = ("auto", "codex", "claude", "antigravity", "local", "none")
+AGENT_OCR_IMAGE_LIMIT = 6
+AGENT_OCR_PDF_PAGE_LIMIT = 12
+AGENT_OCR_MIN_TEXT_CHARS = 80
+DEFAULT_OCR_LANGUAGES = "eng+kor"
 
 
 def slugify(text: str) -> str:
@@ -349,6 +355,7 @@ def source_candidates(vault: Path) -> list[Path]:
         vpath(vault, "raw/sources/extracted"),
         vpath(vault, "raw/sources/downloads"),
         vpath(vault, "raw/figures/video-frames"),
+        vpath(vault, "raw/figures/pdf-ocr"),
         vpath(vault, "raw/graphify_articles"),
     ]
     for root in (vpath(vault, "raw"), vpath(vault, "_raw")):
@@ -918,6 +925,31 @@ def normalize_extracted_text(text: str, max_chars: int = 200000) -> str:
     return cleaned[:max_chars]
 
 
+def readable_text_chars(text: str) -> int:
+    return len(re.findall(r"[A-Za-z0-9가-힣]", text or ""))
+
+
+def text_needs_agent_ocr(text: str, min_chars: int = AGENT_OCR_MIN_TEXT_CHARS) -> bool:
+    return readable_text_chars(text) < min_chars
+
+
+def original_file_from_record(vault: Path, original: dict | None) -> Path | None:
+    rel = (original or {}).get("path")
+    return (vault / rel) if rel else None
+
+
+def image_suffix_from_content_type(content_type: str, fallback: str = ".img") -> str:
+    content_type = (content_type or "").split(";", 1)[0].strip().lower()
+    mapping = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/bmp": ".bmp",
+        "image/tiff": ".tiff",
+    }
+    return mapping.get(content_type, fallback if fallback.startswith(".") else f".{fallback}")
+
+
 def extracted_markdown_path(vault: Path, source_label: str, title: str, text: str) -> Path:
     digest = hashlib.sha256(f"{source_label}\n{text}".encode("utf-8", errors="ignore")).hexdigest()[:12]
     root = vpath(vault, "raw/sources/extracted")
@@ -1065,6 +1097,33 @@ def extracted_evidence_records(
             )
         )
 
+    for match in re.finditer(r"^### (Image OCR|PDF Page OCR) (\d+):\s*(.+?)\s*$", text, flags=re.MULTILINE):
+        heading, index, label = match.groups()
+        body = markdown_block(text, match.end(), r"^### (?:Image OCR|PDF Page OCR) \d+:")
+        if not body:
+            continue
+        image_path_match = re.search(r"^- Image path:\s*`([^`]+)`", body, flags=re.MULTILINE)
+        evidence_kind = "pdf_page_ocr" if heading == "PDF Page OCR" else "image_ocr"
+        records.append(
+            make_evidence_record(
+                vault,
+                source_label,
+                source_path,
+                extraction_kind,
+                title,
+                evidence_kind,
+                f"{slugify(heading)}:{index}",
+                body,
+                {
+                    "ocr_index": int(index),
+                    "label": label,
+                    "image_path": image_path_match.group(1) if image_path_match else "",
+                },
+                parser,
+                original,
+            )
+        )
+
     for match in re.finditer(r"^- Frame (\d+): `([^`]+)`(.*)$", text, flags=re.MULTILINE):
         index, frame_path, rest = match.groups()
         records.append(make_evidence_record(vault, source_label, source_path, extraction_kind, title, "video_frame", f"frame:{index}", f"{frame_path} {rest}".strip(), {"frame_index": int(index), "frame_path": frame_path}, parser, original))
@@ -1187,6 +1246,131 @@ def ocr_image(path: Path, languages: str = "eng+kor") -> tuple[str, str | None]:
             return normalize_extracted_text(pytesseract.image_to_string(image, lang=languages), max_chars=4000), None
     except Exception as exc:
         return "", f"pytesseract failed: {exc}"
+
+
+def native_agent_ocr_prompt(label: str = "") -> str:
+    target = f" for {label}" if label else ""
+    return (
+        f"You are doing OCR{target}. Use only the attached image. "
+        "Read all visible text directly, preserving line breaks when useful. "
+        "If the image is a chart, table, document scan, or screenshot, include visible labels, legends, axes, table cells, and annotations. "
+        "Return plain text only. Do not use markdown. If no readable text is visible, return NO_READABLE_TEXT."
+    )
+
+
+def resolve_agent_ocr_provider(provider: str) -> str:
+    provider = (provider or "auto").lower()
+    if provider == "none":
+        return "none"
+    if provider != "auto":
+        return provider
+    if command_available("codex"):
+        return "codex"
+    if command_available("tesseract") or python_module_available("pytesseract"):
+        return "local"
+    return "none"
+
+
+def run_codex_agent_ocr(root: Path, image_path: Path, label: str, model: str | None, timeout: int) -> tuple[str, str | None]:
+    if not command_available("codex"):
+        return "", "codex CLI is unavailable."
+    with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix=".txt", delete=False) as tmp:
+        out_path = Path(tmp.name)
+    cmd = [
+        "codex",
+        "exec",
+        "--ignore-user-config",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--sandbox",
+        "read-only",
+        "-C",
+        str(root),
+        "--output-last-message",
+        str(out_path),
+    ]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.extend([native_agent_ocr_prompt(label), "--image", str(image_path)])
+    result = subprocess.run(cmd, cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False)
+    raw = out_path.read_text(encoding="utf-8", errors="ignore") if out_path.exists() else ""
+    try:
+        out_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    if result.returncode != 0:
+        return "", f"codex OCR failed: {result.stderr.strip()[:500] or result.stdout.strip()[:500]}"
+    text = normalize_extracted_text(raw, max_chars=12000)
+    if text.strip() == "NO_READABLE_TEXT":
+        return "", None
+    return text, None
+
+
+def run_agent_ocr_on_image(
+    vault: Path,
+    image_path: Path,
+    source_label: str,
+    label: str,
+    provider: str = "auto",
+    model: str | None = None,
+    timeout: int = 180,
+) -> dict:
+    selected = resolve_agent_ocr_provider(provider)
+    result = {
+        "source": source_label,
+        "label": label,
+        "image_path": vault_rel(vault, image_path),
+        "requested_provider": provider,
+        "provider": selected,
+        "model": model or "provider-default",
+        "status": "skipped",
+        "text": "",
+        "warning": "",
+    }
+    if selected == "none":
+        result["warning"] = "agent OCR disabled or no implemented OCR provider available."
+        return result
+    try:
+        if selected == "codex":
+            text, warning = run_codex_agent_ocr(vault, image_path, label, model, timeout)
+        elif selected == "local":
+            text, warning = ocr_image(image_path, languages=DEFAULT_OCR_LANGUAGES)
+        elif selected in {"claude", "antigravity"}:
+            text, warning = "", f"{selected} OCR adapter is not verified in this environment; use native agent vision from the active {selected} session or configure an adapter."
+        else:
+            text, warning = "", f"Unknown OCR provider: {selected}"
+    except subprocess.TimeoutExpired:
+        text, warning = "", f"{selected} OCR timed out after {timeout}s."
+    except Exception as exc:
+        text, warning = "", f"{selected} OCR failed: {exc}"
+    result["text"] = normalize_extracted_text(text, max_chars=12000)
+    result["warning"] = warning or ""
+    result["status"] = "ok" if result["text"] else ("warning" if result["warning"] else "no_text")
+    return result
+
+
+def agent_ocr_markdown(results: list[dict], heading: str = "Image OCR") -> str:
+    if not results:
+        return ""
+    lines = [f"## {heading}", ""]
+    for index, item in enumerate(results, start=1):
+        section = "PDF Page OCR" if heading.lower().startswith("pdf") else "Image OCR"
+        label = item.get("label") or f"Image {index}"
+        lines.extend(
+            [
+                f"### {section} {index}: {label}",
+                "",
+                f"- Source: `{item.get('source', '')}`",
+                f"- Image path: `{item.get('image_path', '')}`",
+                f"- Provider: `{item.get('provider', '')}`",
+                f"- Model: `{item.get('model', '')}`",
+                f"- Status: `{item.get('status', '')}`",
+            ]
+        )
+        if item.get("warning"):
+            lines.append(f"- Warning: {item['warning']}")
+        lines.extend(["", "#### OCR Text", "", item.get("text") or "(No readable text extracted.)", ""])
+    return "\n".join(lines).strip()
 
 
 def frame_asset_root(vault: Path, run_id: str) -> Path:
@@ -1423,6 +1607,137 @@ def video_frames_command(
             pages = [item["source_note"] for item in ingest_result.get("ingested", []) if item.get("source_note")]
             report["figure_card"] = figure_card_command(vault, pages, domain="auto", all_sources=False)
     return report
+
+
+def preserve_candidate_image(vault: Path, src: str, source_label: str) -> tuple[Path | None, dict | None, str | None]:
+    parsed = urllib.parse.urlparse(src)
+    if parsed.scheme == "file":
+        path = Path(urllib.request.url2pathname(parsed.path))
+        if not path.exists() or not path.is_file():
+            return None, None, f"Image candidate file is missing: {src}"
+        original = preserve_original_file(vault, path, source_label=src)
+        return original_file_from_record(vault, original), original, None
+    if is_url(src):
+        try:
+            body, content_type, truncated = fetch_url(src, max_bytes=30_000_000)
+        except Exception as exc:
+            return None, None, f"Image candidate fetch failed: {src} :: {exc}"
+        suffix = Path(parsed.path).suffix.lower()
+        if not (content_type.startswith("image/") or suffix in IMAGE_SUFFIXES):
+            return None, None, f"Image candidate was not an image: {src} content_type={content_type or 'unknown'}"
+        original = preserve_original_bytes(vault, src, body, image_suffix_from_content_type(content_type, suffix or ".img"), source_url=src, content_type=content_type)
+        warning = fetch_truncated_warning(src, 30_000_000, len(body)) if truncated else None
+        return original_file_from_record(vault, original), original, warning
+    path = Path(src).expanduser()
+    if path.exists() and path.is_file():
+        original = preserve_original_file(vault, path, source_label=src)
+        return original_file_from_record(vault, original), original, None
+    return None, None, f"Unsupported image candidate source: {src}"
+
+
+def html_image_agent_ocr(
+    vault: Path,
+    source_label: str,
+    html_text: str,
+    base_url: str | None,
+    provider: str,
+    model: str | None,
+    timeout: int,
+    image_limit: int,
+) -> tuple[str, list[str], list[dict]]:
+    if provider == "none" or image_limit <= 0:
+        return "", [], []
+    warnings: list[str] = []
+    results: list[dict] = []
+    for index, item in enumerate(extract_image_candidates(html_text, base_url=base_url)[:image_limit], start=1):
+        label = item.get("alt") or item.get("caption") or item.get("title") or f"Image candidate {index}"
+        image_path, original, warning = preserve_candidate_image(vault, item["src"], source_label)
+        if warning:
+            warnings.append(warning)
+        if image_path is None:
+            continue
+        result = run_agent_ocr_on_image(vault, image_path, item["src"], label, provider=provider, model=model, timeout=timeout)
+        if original:
+            result["original"] = original
+        result["candidate_score"] = item.get("score")
+        result["candidate_reasons"] = item.get("reasons", [])
+        results.append(result)
+    return agent_ocr_markdown(results, heading="Image OCR"), warnings + [item["warning"] for item in results if item.get("warning")], results
+
+
+def render_pdf_pages_for_agent_ocr(vault: Path, pdf_path: Path, max_pages: int = AGENT_OCR_PDF_PAGE_LIMIT) -> tuple[list[Path], list[str]]:
+    run_id = f"{slugify(pdf_path.stem)[:60]}-{sha256_file(pdf_path)[:10]}"
+    out_dir = vpath(vault, "raw/figures/pdf-ocr") / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    warnings: list[str] = []
+    if python_module_available("fitz"):
+        import fitz
+
+        document = fitz.open(str(pdf_path))
+        pages = []
+        for index in range(min(len(document), max_pages)):
+            out = out_dir / f"page_{index + 1:04d}.png"
+            if not out.exists():
+                pixmap = document[index].get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                pixmap.save(str(out))
+            pages.append(out)
+        if len(document) > max_pages:
+            warnings.append(f"PDF OCR limited to first {max_pages} pages out of {len(document)}.")
+        return pages, warnings
+    if command_available("pdftoppm"):
+        prefix = out_dir / "page"
+        cmd = ["pdftoppm", "-png", "-r", "150", "-f", "1", "-l", str(max_pages), str(pdf_path), str(prefix)]
+        result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=False)
+        if result.returncode != 0:
+            return [], [f"pdftoppm PDF render failed: {result.stderr.strip()[:500]}"]
+        pages = sorted(out_dir.glob("page-*.png"))
+        return pages, warnings
+    return [], ["PDF page rendering for agent OCR requires PyMuPDF (fitz) or pdftoppm."]
+
+
+def pdf_agent_ocr_markdown(
+    vault: Path,
+    source_label: str,
+    pdf_path: Path,
+    provider: str,
+    model: str | None,
+    timeout: int,
+    page_limit: int,
+) -> tuple[str, list[str], list[dict]]:
+    if provider == "none":
+        return "", [], []
+    pages, warnings = render_pdf_pages_for_agent_ocr(vault, pdf_path, max_pages=page_limit)
+    results = []
+    for index, page in enumerate(pages, start=1):
+        results.append(run_agent_ocr_on_image(vault, page, source_label, f"Page {index}", provider=provider, model=model, timeout=timeout))
+    return agent_ocr_markdown(results, heading="PDF Page OCR"), warnings + [item["warning"] for item in results if item.get("warning")], results
+
+
+def image_source_to_markdown(
+    vault: Path,
+    source_label: str,
+    image_path: Path,
+    title: str,
+    original: dict,
+    provider: str,
+    model: str | None,
+    timeout: int,
+) -> dict:
+    result = run_agent_ocr_on_image(vault, image_path, source_label, title, provider=provider, model=model, timeout=timeout)
+    text = "\n\n".join(
+        part
+        for part in [
+            "## Image Source",
+            f"- Image path: `{vault_rel(vault, image_path)}`",
+            f"- Original source: `{source_label}`",
+            agent_ocr_markdown([result], heading="Image OCR"),
+        ]
+        if part
+    )
+    warnings = [result["warning"]] if result.get("warning") else []
+    out = write_extracted_markdown(vault, source_label, f"image-ocr:{result['provider']}", title, text, warnings=warnings)
+    records = index_extracted_evidence(vault, source_label, out, f"image-ocr:{result['provider']}", title, text, parser=result["provider"], original=original)
+    return {"source": source_label, "path": out, "kind": "image", "parser": result["provider"], "extracted": True, "original_path": image_path, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": warnings, "ocr": result}
 
 
 def collect_markdown_outputs(root: Path) -> str:
@@ -1884,6 +2199,10 @@ def extract_url_pdf_result(
     content_type: str,
     warnings: list[str],
     kind: str,
+    ocr_provider: str = "auto",
+    ocr_model: str | None = None,
+    ocr_timeout: int = 180,
+    ocr_pdf_page_limit: int = AGENT_OCR_PDF_PAGE_LIMIT,
 ) -> dict:
     pdf_path = save_downloaded_pdf(vault, pdf_url, body)
     original = preserve_original_file(vault, pdf_path, source_label=source_url)
@@ -1894,7 +2213,16 @@ def extract_url_pdf_result(
         original["content_type"] = content_type
     text, pdf_warnings, method = extract_pdf_document(pdf_path)
     title = page_title_from_path(pdf_path)
-    path = write_extracted_markdown(vault, source_url, f"{kind}:{method}", title, text, warnings=warnings + pdf_warnings)
+    ocr_text = ""
+    ocr_warnings: list[str] = []
+    if text_needs_agent_ocr(text) and ocr_provider != "none":
+        ocr_text, ocr_warnings, _ = pdf_agent_ocr_markdown(vault, source_url, pdf_path, ocr_provider, ocr_model, ocr_timeout, ocr_pdf_page_limit)
+    if ocr_text:
+        text = "\n\n".join(part for part in [text, ocr_text] if part.strip())
+        method = f"{method}+agent-ocr"
+    if not text.strip():
+        text = "## PDF Extraction Status\n\nNo extractable text was found, and agent OCR did not produce readable text."
+    path = write_extracted_markdown(vault, source_url, f"{kind}:{method}", title, text, warnings=warnings + pdf_warnings + ocr_warnings)
     records = index_extracted_evidence(vault, source_url, path, f"{kind}:{method}", title, text, parser=method, original=original)
     return {
         "source": source_url,
@@ -1906,11 +2234,20 @@ def extract_url_pdf_result(
         "original": original,
         "evidence_index": evidence_index_path(vault),
         "evidence_records": len(records),
-        "warnings": warnings + pdf_warnings,
+        "warnings": warnings + pdf_warnings + ocr_warnings,
     }
 
 
-def try_public_pdf_discovery(vault: Path, source_url: str, html_text: str, base_warnings: list[str]) -> tuple[dict | None, list[str]]:
+def try_public_pdf_discovery(
+    vault: Path,
+    source_url: str,
+    html_text: str,
+    base_warnings: list[str],
+    ocr_provider: str = "auto",
+    ocr_model: str | None = None,
+    ocr_timeout: int = 180,
+    ocr_pdf_page_limit: int = AGENT_OCR_PDF_PAGE_LIMIT,
+) -> tuple[dict | None, list[str]]:
     candidates, warnings = public_pdf_candidates(source_url, html_text)
     if not candidates:
         return None, warnings
@@ -1927,7 +2264,19 @@ def try_public_pdf_discovery(vault: Path, source_url: str, html_text: str, base_
             warnings.append(fetch_truncated_warning(pdf_url, 60_000_000, len(body)))
         if is_pdf_response(pdf_url, content_type, body):
             selected_warnings = base_warnings + warnings + [f"public_pdf_selected: {reason} {pdf_url}"]
-            return extract_url_pdf_result(vault, source_url, pdf_url, body, content_type, selected_warnings, "public-url-pdf"), warnings
+            return extract_url_pdf_result(
+                vault,
+                source_url,
+                pdf_url,
+                body,
+                content_type,
+                selected_warnings,
+                "public-url-pdf",
+                ocr_provider=ocr_provider,
+                ocr_model=ocr_model,
+                ocr_timeout=ocr_timeout,
+                ocr_pdf_page_limit=ocr_pdf_page_limit,
+            ), warnings
         warnings.append(f"Public PDF candidate was not a PDF ({reason}): {pdf_url} content_type={content_type or 'unknown'}")
     return None, warnings
 
@@ -2093,7 +2442,15 @@ def extract_youtube_transcript(url: str) -> tuple[str, str, list[str]]:
         return title, format_youtube_document(title, snippets, metadata), warnings
 
 
-def extract_source_to_markdown(vault: Path, source_value: str | Path) -> dict:
+def extract_source_to_markdown(
+    vault: Path,
+    source_value: str | Path,
+    ocr_provider: str = "auto",
+    ocr_model: str | None = None,
+    ocr_timeout: int = 180,
+    ocr_image_limit: int = AGENT_OCR_IMAGE_LIMIT,
+    ocr_pdf_page_limit: int = AGENT_OCR_PDF_PAGE_LIMIT,
+) -> dict:
     vault = vault.expanduser()
     value = str(source_value)
     if is_youtube_url(value):
@@ -2104,17 +2461,28 @@ def extract_source_to_markdown(vault: Path, source_value: str | Path) -> dict:
         return {"source": value, "path": path, "kind": "youtube-transcript", "extracted": True, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": warnings}
     if is_url(value):
         body, content_type, fetch_warnings = fetch_web_content(value)
+        url_suffix = Path(urllib.parse.urlparse(value).path).suffix.lower()
+        if content_type.startswith("image/") or url_suffix in IMAGE_SUFFIXES:
+            original = preserve_original_bytes(vault, value, body, image_suffix_from_content_type(content_type, url_suffix or ".img"), source_url=value, content_type=content_type)
+            image_path = original_file_from_record(vault, original)
+            if image_path is None:
+                return {"source": value, "error": "image_preserve_failed"}
+            return image_source_to_markdown(vault, value, image_path, page_title_from_path(Path(urllib.parse.urlparse(value).path or "image")), original, ocr_provider, ocr_model, ocr_timeout)
         if is_pdf_response(value, content_type, body):
-            return extract_url_pdf_result(vault, value, value, body, content_type, fetch_warnings, "url-pdf")
+            return extract_url_pdf_result(vault, value, value, body, content_type, fetch_warnings, "url-pdf", ocr_provider=ocr_provider, ocr_model=ocr_model, ocr_timeout=ocr_timeout, ocr_pdf_page_limit=ocr_pdf_page_limit)
         html_text = decode_response_body(body, content_type)
-        discovered_pdf, discovery_warnings = try_public_pdf_discovery(vault, value, html_text, fetch_warnings)
+        discovered_pdf, discovery_warnings = try_public_pdf_discovery(vault, value, html_text, fetch_warnings, ocr_provider=ocr_provider, ocr_model=ocr_model, ocr_timeout=ocr_timeout, ocr_pdf_page_limit=ocr_pdf_page_limit)
         if discovered_pdf:
             return discovered_pdf
         original = preserve_original_bytes(vault, value, body, ".html", source_url=value, content_type=content_type)
         title, text, warnings = extract_html_document(html_text, base_url=value)
-        path = write_extracted_markdown(vault, value, "web-page", title or urllib.parse.urlparse(value).netloc, text, warnings=fetch_warnings + discovery_warnings + warnings)
+        ocr_text, ocr_warnings, _ = html_image_agent_ocr(vault, value, html_text, value, ocr_provider, ocr_model, ocr_timeout, ocr_image_limit)
+        if ocr_text:
+            text = "\n\n".join([text, ocr_text])
+        all_warnings = fetch_warnings + discovery_warnings + warnings + ocr_warnings
+        path = write_extracted_markdown(vault, value, "web-page", title or urllib.parse.urlparse(value).netloc, text, warnings=all_warnings)
         records = index_extracted_evidence(vault, value, path, "web-page", title or urllib.parse.urlparse(value).netloc, text, original=original)
-        return {"source": value, "path": path, "kind": "web-page", "extracted": True, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": fetch_warnings + discovery_warnings + warnings}
+        return {"source": value, "path": path, "kind": "web-page", "extracted": True, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": all_warnings}
 
     path = Path(value).expanduser()
     if not path.exists() or not path.is_file():
@@ -2123,15 +2491,33 @@ def extract_source_to_markdown(vault: Path, source_value: str | Path) -> dict:
     if suffix == ".pdf":
         original = preserve_original_file(vault, path)
         text, warnings, method = extract_pdf_document(path)
-        out = write_extracted_markdown(vault, str(path), f"pdf:{method}", page_title_from_path(path), text, warnings=warnings)
+        ocr_text = ""
+        ocr_warnings: list[str] = []
+        if text_needs_agent_ocr(text) and ocr_provider != "none":
+            ocr_text, ocr_warnings, _ = pdf_agent_ocr_markdown(vault, str(path), path, ocr_provider, ocr_model, ocr_timeout, ocr_pdf_page_limit)
+        if ocr_text:
+            text = "\n\n".join(part for part in [text, ocr_text] if part.strip())
+            method = f"{method}+agent-ocr"
+        if not text.strip():
+            text = "## PDF Extraction Status\n\nNo extractable text was found, and agent OCR did not produce readable text."
+        out = write_extracted_markdown(vault, str(path), f"pdf:{method}", page_title_from_path(path), text, warnings=warnings + ocr_warnings)
         records = index_extracted_evidence(vault, str(path), out, f"pdf:{method}", page_title_from_path(path), text, parser=method, original=original)
-        return {"source": value, "path": out, "kind": "pdf", "parser": method, "extracted": True, "original_path": path, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": warnings}
+        return {"source": value, "path": out, "kind": "pdf", "parser": method, "extracted": True, "original_path": path, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": warnings + ocr_warnings}
     if suffix in {".html", ".htm"}:
         original = preserve_original_file(vault, path)
-        title, text, warnings = extract_html_document(path.read_text(encoding="utf-8", errors="ignore"), base_url=path.resolve().as_uri())
-        out = write_extracted_markdown(vault, str(path), "html-file", title or page_title_from_path(path), text, warnings=warnings)
+        html_text = path.read_text(encoding="utf-8", errors="ignore")
+        base_url = path.resolve().as_uri()
+        title, text, warnings = extract_html_document(html_text, base_url=base_url)
+        ocr_text, ocr_warnings, _ = html_image_agent_ocr(vault, str(path), html_text, base_url, ocr_provider, ocr_model, ocr_timeout, ocr_image_limit)
+        if ocr_text:
+            text = "\n\n".join([text, ocr_text])
+        out = write_extracted_markdown(vault, str(path), "html-file", title or page_title_from_path(path), text, warnings=warnings + ocr_warnings)
         records = index_extracted_evidence(vault, str(path), out, "html-file", title or page_title_from_path(path), text, original=original)
-        return {"source": value, "path": out, "kind": "html-file", "extracted": True, "original_path": path, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": warnings}
+        return {"source": value, "path": out, "kind": "html-file", "extracted": True, "original_path": path, "original": original, "evidence_index": evidence_index_path(vault), "evidence_records": len(records), "warnings": warnings + ocr_warnings}
+    if suffix in IMAGE_SUFFIXES:
+        original = preserve_original_file(vault, path)
+        image_path = original_file_from_record(vault, original) or path
+        return image_source_to_markdown(vault, str(path), image_path, page_title_from_path(path), original, ocr_provider, ocr_model, ocr_timeout)
     if suffix in OFFICE_SOURCE_SUFFIXES:
         original = preserve_original_file(vault, path)
         text, warnings, method = extract_office_document(path)
@@ -2147,12 +2533,28 @@ def extract_source_to_markdown(vault: Path, source_value: str | Path) -> dict:
     return result
 
 
-def extract_sources(vault: Path, sources: list[str]) -> dict:
+def extract_sources(
+    vault: Path,
+    sources: list[str],
+    ocr_provider: str = "auto",
+    ocr_model: str | None = None,
+    ocr_timeout: int = 180,
+    ocr_image_limit: int = AGENT_OCR_IMAGE_LIMIT,
+    ocr_pdf_page_limit: int = AGENT_OCR_PDF_PAGE_LIMIT,
+) -> dict:
     extracted = []
     skipped = []
     for source in sources:
         try:
-            result = extract_source_to_markdown(vault, source)
+            result = extract_source_to_markdown(
+                vault,
+                source,
+                ocr_provider=ocr_provider,
+                ocr_model=ocr_model,
+                ocr_timeout=ocr_timeout,
+                ocr_image_limit=ocr_image_limit,
+                ocr_pdf_page_limit=ocr_pdf_page_limit,
+            )
         except Exception as exc:
             skipped.append({"source": str(source), "reason": "extract_failed", "error": str(exc)})
             continue
@@ -2463,6 +2865,11 @@ def ingest_sources(
     auto_promote: bool = False,
     min_evidence_score: float = 0.75,
     max_auto_notes: int = 3,
+    ocr_provider: str = "auto",
+    ocr_model: str | None = None,
+    ocr_timeout: int = 180,
+    ocr_image_limit: int = AGENT_OCR_IMAGE_LIMIT,
+    ocr_pdf_page_limit: int = AGENT_OCR_PDF_PAGE_LIMIT,
 ) -> dict:
     vault = vault.expanduser()
     selected = sources if sources else source_candidates(vault)
@@ -2475,7 +2882,15 @@ def ingest_sources(
 
     for source_value in selected:
         try:
-            prepared = extract_source_to_markdown(vault, source_value)
+            prepared = extract_source_to_markdown(
+                vault,
+                source_value,
+                ocr_provider=ocr_provider,
+                ocr_model=ocr_model,
+                ocr_timeout=ocr_timeout,
+                ocr_image_limit=ocr_image_limit,
+                ocr_pdf_page_limit=ocr_pdf_page_limit,
+            )
         except Exception as exc:
             skipped.append({"source": str(source_value), "reason": "extract_failed", "error": str(exc)})
             continue
@@ -3288,9 +3703,9 @@ def python_module_available(module: str) -> bool:
 
 
 def capabilities(vault: Path | None = None) -> dict:
-    modules = ["pypdf", "PyPDF2", "pdfplumber", "docx", "pptx", "openpyxl", "networkx", "youtube_transcript_api", "pytesseract", "playwright", "matplotlib", "numpy", "PIL"]
+    modules = ["pypdf", "PyPDF2", "pdfplumber", "docx", "pptx", "openpyxl", "networkx", "youtube_transcript_api", "pytesseract", "playwright", "matplotlib", "numpy", "PIL", "fitz"]
     caps = {
-        "commands": {name: command_available(name) for name in ["git", "node", "npx", "uv", "uvx", "graphify", "playwright", "yt-dlp", "ffmpeg", "ffprobe", "tesseract", "obsidian", "opendataloader-pdf", "marker_single", "hwpjs", "deepcloak"]},
+        "commands": {name: command_available(name) for name in ["git", "node", "npx", "uv", "uvx", "graphify", "playwright", "yt-dlp", "ffmpeg", "ffprobe", "tesseract", "obsidian", "opendataloader-pdf", "marker_single", "hwpjs", "deepcloak", "codex", "claude", "antigravity", "ag", "pdftoppm"]},
         "python_modules": {name: python_module_available(name) for name in modules},
         "optional_modes": {
             "basic_wikilink_search": True,
@@ -3309,8 +3724,13 @@ def capabilities(vault: Path | None = None) -> dict:
             "image_frame_analysis_ready": python_module_available("PIL"),
             "video_frame_extract_ready": command_available("ffmpeg"),
             "youtube_frame_extract_ready": command_available("ffmpeg") and (command_available("yt-dlp") or command_available("uvx")),
+            "agent_ocr_codex_ready": command_available("codex"),
+            "agent_ocr_claude_cli_seen": command_available("claude"),
+            "agent_ocr_antigravity_cli_seen": command_available("antigravity") or command_available("ag"),
+            "pdf_page_render_ready": python_module_available("fitz") or command_available("pdftoppm"),
         },
     }
+    caps["optional_modes"]["agent_ocr_auto_provider"] = resolve_agent_ocr_provider("auto")
     if vault is not None:
         caps["vault"] = doctor(vault)
     return caps
@@ -4495,6 +4915,11 @@ def main() -> int:
     extract_p.add_argument("--auto-promote", action="store_true", help="Promote high-scoring auto-synthesis updates into stable synthesis notes.")
     extract_p.add_argument("--min-evidence-score", type=float, default=0.75, help="Minimum evidence score required for ready/promoted auto-synthesis updates.")
     extract_p.add_argument("--max-auto-notes", type=int, default=3, help="Maximum research-profile axes to update for each ingested source.")
+    extract_p.add_argument("--ocr-provider", choices=AGENT_OCR_PROVIDERS, default="auto", help="Native agent OCR provider for images or scanned PDFs.")
+    extract_p.add_argument("--ocr-model", help="Optional model name passed to the native agent OCR provider.")
+    extract_p.add_argument("--ocr-timeout", type=int, default=180, help="Timeout in seconds for each agent OCR call.")
+    extract_p.add_argument("--ocr-image-limit", type=int, default=AGENT_OCR_IMAGE_LIMIT, help="Maximum HTML image candidates to OCR.")
+    extract_p.add_argument("--ocr-pdf-page-limit", type=int, default=AGENT_OCR_PDF_PAGE_LIMIT, help="Maximum PDF pages to render for agent OCR.")
     extract_p.add_argument("sources", nargs="+", help="PDF files, HTML files, web URLs, YouTube URLs, or text files.")
 
     ingest_p = sub.add_parser("ingest")
@@ -4505,6 +4930,11 @@ def main() -> int:
     ingest_p.add_argument("--auto-promote", action="store_true", help="Promote high-scoring auto-synthesis updates into stable synthesis notes.")
     ingest_p.add_argument("--min-evidence-score", type=float, default=0.75, help="Minimum evidence score required for ready/promoted auto-synthesis updates.")
     ingest_p.add_argument("--max-auto-notes", type=int, default=3, help="Maximum research-profile axes to update for each ingested source.")
+    ingest_p.add_argument("--ocr-provider", choices=AGENT_OCR_PROVIDERS, default="auto", help="Native agent OCR provider for images or scanned PDFs.")
+    ingest_p.add_argument("--ocr-model", help="Optional model name passed to the native agent OCR provider.")
+    ingest_p.add_argument("--ocr-timeout", type=int, default=180, help="Timeout in seconds for each agent OCR call.")
+    ingest_p.add_argument("--ocr-image-limit", type=int, default=AGENT_OCR_IMAGE_LIMIT, help="Maximum HTML image candidates to OCR.")
+    ingest_p.add_argument("--ocr-pdf-page-limit", type=int, default=AGENT_OCR_PDF_PAGE_LIMIT, help="Maximum PDF pages to render for agent OCR.")
 
     lint_p = sub.add_parser("lint")
     lint_p.add_argument("--vault", default=".")
@@ -4643,7 +5073,15 @@ def main() -> int:
 
     args = parser.parse_args()
     if args.command == "extract":
-        result = extract_sources(Path(args.vault), args.sources)
+        result = extract_sources(
+            Path(args.vault),
+            args.sources,
+            ocr_provider=args.ocr_provider,
+            ocr_model=args.ocr_model,
+            ocr_timeout=args.ocr_timeout,
+            ocr_image_limit=args.ocr_image_limit,
+            ocr_pdf_page_limit=args.ocr_pdf_page_limit,
+        )
         if args.ingest:
             paths = [item["path"] for item in result["extracted"]]
             result["ingest"] = ingest_sources(
@@ -4653,6 +5091,11 @@ def main() -> int:
                 auto_promote=args.auto_promote,
                 min_evidence_score=args.min_evidence_score,
                 max_auto_notes=args.max_auto_notes,
+                ocr_provider=args.ocr_provider,
+                ocr_model=args.ocr_model,
+                ocr_timeout=args.ocr_timeout,
+                ocr_image_limit=args.ocr_image_limit,
+                ocr_pdf_page_limit=args.ocr_pdf_page_limit,
             )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if has_failed_skips(result) or has_failed_skips(result.get("ingest", {})):
@@ -4673,6 +5116,11 @@ def main() -> int:
             auto_promote=args.auto_promote,
             min_evidence_score=args.min_evidence_score,
             max_auto_notes=args.max_auto_notes,
+            ocr_provider=args.ocr_provider,
+            ocr_model=args.ocr_model,
+            ocr_timeout=args.ocr_timeout,
+            ocr_image_limit=args.ocr_image_limit,
+            ocr_pdf_page_limit=args.ocr_pdf_page_limit,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if has_failed_skips(result):

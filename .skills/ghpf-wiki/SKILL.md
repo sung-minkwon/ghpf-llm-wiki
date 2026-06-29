@@ -71,12 +71,21 @@ python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <docx-or-pptx-or-xl
 Natural-language aliases such as "이 문서를 LLM Wiki에 저장해줘", "이 PDF 위키화해줘", "이 웹주소를 LLM Wiki에 저장해줘", "이 유튜브를 위키에 저장해줘", or "save this URL to the LLM Wiki" mean:
 
 ```bash
-python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube-or-office-doc>
+python3 scripts/ghpf_wiki.py extract --vault <path> --ingest --ocr-provider auto <pdf-or-url-or-youtube-or-office-doc-or-image>
 python3 scripts/ghpf_wiki.py index --vault <path>
 python3 scripts/ghpf_wiki.py lint --vault <path>
 ```
 
-Use the explicit vault when provided; otherwise use the current known vault or `./my-vault` after setup. Report the source note, preserved original or source URL, `evidence/index.jsonl`, evidence count, and lint status. If the user explicitly asks for YouTube/video/image frame analysis, also run `video-frames --ingest --figure-card`.
+Use the explicit vault when provided; otherwise use the current known vault or `./my-vault` after setup. Report the source note, preserved original or source URL, `evidence/index.jsonl`, evidence count, OCR provider/status when OCR was attempted, and lint status. If the user explicitly asks for YouTube/video/image frame analysis, also run `video-frames --ingest --figure-card`.
+
+Agent OCR policy:
+
+1. Default to `--ocr-provider auto` for LLM Wiki saves.
+2. If a source is an image, contains content-bearing images, or looks like a scanned/text-poor PDF, run native agent vision OCR before compiling the source note.
+3. Codex uses `codex exec --image` and the provider's default model unless `--ocr-model` is supplied.
+4. Claude Code and Antigravity sessions should use their native vision/OCR capability when this skill is active; if a CLI adapter is not verified, record the warning instead of pretending OCR succeeded.
+5. Store OCR output under `Image OCR` or `PDF Page OCR` sections and index it in `evidence/index.jsonl`.
+6. Use `--ocr-provider none` only when OCR should be intentionally skipped.
 
 Extraction tiers:
 
@@ -85,6 +94,7 @@ Extraction tiers:
 3. DOCX/PPTX/XLSX: Python office libraries when installed.
 4. Web/HTML: static extraction plus image/figure candidates, then optional Playwright/DeepCloak fallback.
 5. YouTube: latest `youtube_transcript_api.fetch()` with timestamped lines, metadata from `yt-dlp`, and `yt-dlp` subtitle fallback.
+6. Agent OCR: native vision OCR for direct images, content-bearing HTML images, and scanned/text-poor PDF pages.
 
 For YouTube, local video, or image visual evidence, sample frames, analyze them, ingest the generated Markdown, and create a figure card:
 

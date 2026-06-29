@@ -17,8 +17,8 @@ Useful commands:
 ```bash
 ./install.sh
 python3 scripts/setup_vault.py --vault <path> --profile auto
-python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube>
-python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <docx-or-pptx-or-xlsx-or-hwp>
+python3 scripts/ghpf_wiki.py extract --vault <path> --ingest --ocr-provider auto <pdf-or-url-or-youtube-or-image>
+python3 scripts/ghpf_wiki.py extract --vault <path> --ingest --ocr-provider auto <docx-or-pptx-or-xlsx-or-hwp>
 python3 scripts/ghpf_wiki.py video-frames --vault <path> --source <youtube-or-video-or-image> --ingest --figure-card
 python3 scripts/ghpf_wiki.py card --vault <path> --type paper --all-sources
 python3 scripts/ghpf_wiki.py index --vault <path>
@@ -40,12 +40,12 @@ Natural source trigger:
 When the user says "이 문서를 LLM Wiki에 저장해줘", "이 PDF 위키화해줘", "이 웹주소를 LLM Wiki에 저장해줘", "이 유튜브를 위키에 저장해줘", "save this URL to the LLM Wiki", or similar, run the full intake automatically:
 
 ```bash
-python3 scripts/ghpf_wiki.py extract --vault <path> --ingest <pdf-or-url-or-youtube-or-office-doc>
+python3 scripts/ghpf_wiki.py extract --vault <path> --ingest --ocr-provider auto <pdf-or-url-or-youtube-or-office-doc-or-image>
 python3 scripts/ghpf_wiki.py index --vault <path>
 python3 scripts/ghpf_wiki.py lint --vault <path>
 ```
 
-Use the explicit vault if provided; otherwise use the current known vault or `./my-vault` after setup. For existing Obsidian vaults, verify that the path contains `.obsidian`; if `doctor` reports nested Obsidian vaults, use the nested vault folder rather than the parent. If `wiki/research-profile.md` has focus axes, `ingest` automatically files matching candidate updates into `wiki/syntheses/auto-*.md`; report those paths as review candidates. For YouTube/video/image visual frames, also use `video-frames --ingest --figure-card` when the user asks for frame/image analysis. Report the created source note, preserved original or source URL, `evidence/index.jsonl`, evidence count, auto-synthesis paths if any, and lint result.
+Use the explicit vault if provided; otherwise use the current known vault or `./my-vault` after setup. For existing Obsidian vaults, verify that the path contains `.obsidian`; if `doctor` reports nested Obsidian vaults, use the nested vault folder rather than the parent. If `wiki/research-profile.md` has focus axes, `ingest` automatically files matching candidate updates into `wiki/syntheses/auto-*.md`; report those paths as review candidates. For image sources, content-bearing web images, and scanned/text-poor PDFs, keep `--ocr-provider auto` so the active agent can use native vision OCR when available and record provider/status in the note and evidence index. For YouTube/video/image visual frames, also use `video-frames --ingest --figure-card` when the user asks for frame/image analysis. Report the created source note, preserved original or source URL, `evidence/index.jsonl`, evidence count, OCR status when attempted, auto-synthesis paths if any, and lint result.
 
 For Claude Code slash-command style use, say:
 

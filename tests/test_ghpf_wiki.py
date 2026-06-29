@@ -131,6 +131,75 @@ class GhpfWikiTests(unittest.TestCase):
         result = json.loads(completed.stdout)
         self.assertEqual(result["skipped"][0]["reason"], "missing_or_not_file")
 
+    def test_extract_image_runs_agent_ocr_and_indexes_evidence(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / "vault"
+            image = root / "scan.png"
+            image.write_bytes(b"not-a-real-png-but-preserved")
+            fake_ocr = {
+                "source": str(image),
+                "label": "Scan",
+                "image_path": "raw/originals/scan-test.png",
+                "requested_provider": "codex",
+                "provider": "codex",
+                "model": "provider-default",
+                "status": "ok",
+                "text": "VISIBLE OCR TEXT",
+                "warning": "",
+            }
+
+            with mock.patch.object(ghpf_wiki, "run_agent_ocr_on_image", return_value=fake_ocr):
+                result = ghpf_wiki.extract_sources(vault, [str(image)], ocr_provider="codex")
+
+            self.assertEqual(result["skipped"], [])
+            extracted = result["extracted"][0]
+            self.assertEqual(extracted["kind"], "image")
+            note = Path(extracted["path"]).read_text(encoding="utf-8")
+            self.assertIn("## Image OCR", note)
+            self.assertIn("VISIBLE OCR TEXT", note)
+            evidence = (vault / "evidence" / "index.jsonl").read_text(encoding="utf-8")
+            self.assertIn('"evidence_kind": "image_ocr"', evidence)
+            self.assertIn("VISIBLE OCR TEXT", evidence)
+
+    def test_extract_text_poor_pdf_uses_agent_ocr_and_indexes_page_evidence(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / "vault"
+            pdf = root / "scan.pdf"
+            pdf.write_bytes(b"%PDF-1.4 minimal test bytes")
+            ocr_markdown = "\n".join(
+                [
+                    "## PDF Page OCR",
+                    "",
+                    "### PDF Page OCR 1: Page 1",
+                    "",
+                    f"- Source: `{pdf}`",
+                    "- Image path: `raw/figures/pdf-ocr/scan/page_0001.png`",
+                    "- Provider: `codex`",
+                    "- Model: `provider-default`",
+                    "- Status: `ok`",
+                    "",
+                    "#### OCR Text",
+                    "",
+                    "PDF OCR TEXT",
+                ]
+            )
+
+            with mock.patch.object(ghpf_wiki, "extract_pdf_document", return_value=("", ["pypdf: no text"], "pypdf")):
+                with mock.patch.object(ghpf_wiki, "pdf_agent_ocr_markdown", return_value=(ocr_markdown, [], [])):
+                    result = ghpf_wiki.extract_sources(vault, [str(pdf)], ocr_provider="codex")
+
+            self.assertEqual(result["skipped"], [])
+            extracted = result["extracted"][0]
+            self.assertEqual(extracted["parser"], "pypdf+agent-ocr")
+            note = Path(extracted["path"]).read_text(encoding="utf-8")
+            self.assertIn("## PDF Page OCR", note)
+            self.assertIn("PDF OCR TEXT", note)
+            evidence = (vault / "evidence" / "index.jsonl").read_text(encoding="utf-8")
+            self.assertIn('"evidence_kind": "pdf_page_ocr"', evidence)
+            self.assertIn("PDF OCR TEXT", evidence)
+
     def test_lint_resolves_decimal_path_wikilinks(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             vault = Path(temp_dir) / "vault"

@@ -23,7 +23,7 @@ Use this repository as an Obsidian-first LLM Wiki with a sidecar graph and task-
 - For setup, run `./install.sh` for the default install or `python3 scripts/setup_vault.py --vault <path> --profile auto` for manual setup.
 - For an existing Obsidian vault, use the folder that directly contains `.obsidian` as `<path>`. If a user gives a parent folder, run `python3 scripts/ghpf_wiki.py doctor --vault <path>` and use the reported nested Obsidian vault path instead of writing to the parent.
 - For extract/video-frames/ingest/source-curate/card/index/search/insight/evaluate/figure-card/figure-insight/figure-export/lint/quality/diff/state/link-audit/link-strengthen/curate/maintenance/graphify-import/cache-clean/file-back/graph/context/task sidecar work, run `python3 scripts/ghpf_wiki.py --help`.
-- Treat advanced PDF parsing, HWP/HWPX conversion, YouTube transcript metadata, OCR, office document parsing, and browser/DeepCloak fallback as optional environment capabilities. Check `python3 scripts/ghpf_wiki.py capabilities --vault <path>` before assuming they are installed.
+- Treat advanced PDF parsing, HWP/HWPX conversion, YouTube transcript metadata, native agent OCR, office document parsing, and browser/DeepCloak fallback as optional environment capabilities. Check `python3 scripts/ghpf_wiki.py capabilities --vault <path>` before assuming they are installed.
 
 ## Expected Workflow
 
@@ -34,11 +34,11 @@ When the user says a short natural-language request such as "이 문서를 LLM W
 1. Treat it as the full source intake workflow, not a request for a manual plan.
 2. Resolve the source from the provided attachment/path/URL, or from the only plausible PDF/Office/HTML source in the current working directory. If multiple sources are plausible, ask which one.
 3. Resolve the vault from the user's explicit path, the current project/vault context, an existing `./my-vault`, or create `./my-vault` via `./install.sh` when needed. For an existing Obsidian vault, verify that the selected path directly contains `.obsidian`; if it only contains a nested Obsidian vault, use the nested folder or ask before writing.
-4. Run `python3 scripts/ghpf_wiki.py extract --vault <vault> --ingest <source>` for PDF, web page, local HTML, Office/HWP, or YouTube transcript intake.
+4. Run `python3 scripts/ghpf_wiki.py extract --vault <vault> --ingest --ocr-provider auto <source>` for PDF, web page, local HTML, Office/HWP, image, or YouTube transcript intake.
 5. If `wiki/research-profile.md` exists, `ingest` also files matching candidate updates into `wiki/syntheses/auto-*.md`; report those paths when created and treat them as review candidates, not final conclusions.
 6. If the user explicitly asks for YouTube/video/image visual frames, also run `python3 scripts/ghpf_wiki.py video-frames --vault <vault> --source <source> --ingest --figure-card`.
 7. Run `python3 scripts/ghpf_wiki.py index --vault <vault>` and `python3 scripts/ghpf_wiki.py lint --vault <vault>`.
-8. Report the source note path, preserved original path or source URL, `evidence/index.jsonl`, evidence record count, auto-synthesis paths if any, and lint result.
+8. Report the source note path, preserved original path or source URL, `evidence/index.jsonl`, evidence record count, OCR provider/status when OCR was attempted, auto-synthesis paths if any, and lint result.
 
 1. Detect or select a profile: `research`, `trading`, `codebase`, `mixed`, or `general`.
 2. Create missing vault folders.
