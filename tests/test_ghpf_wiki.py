@@ -276,6 +276,76 @@ class GhpfWikiTests(unittest.TestCase):
             self.assertNotIn("Skip to main content", note)
             self.assertNotIn("Extraction kind", note)
 
+    def test_ingest_paper_creates_bilingual_paper_page_and_card(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vault = root / "vault"
+            source = root / "downloaded-paper.md"
+            source.write_text(
+                "\n".join(
+                    [
+                        "# Downloaded Paper",
+                        "Original source: `https://example.test/paper.pdf`",
+                        "Extraction kind: `url-pdf:pypdf`",
+                        "",
+                        "## Extracted Text",
+                        "",
+                        "## Page 1",
+                        "Received: 25 August 2025 / Accepted: 14 December 2025",
+                        "From language to action: a review of large language models",
+                        "as autonomous agents and tool users",
+                        "Sadia Sultana Chowa1 · Riasad Alvi2",
+                        "Artificial Intelligence Review (2026) 59:71",
+                        "https://doi.org/10.1007/s10462-025-11471-9",
+                        "Abstract",
+                        "This review examines recent developments in employing LLMs as autonomous agents and tool users and comprises seven research questions.",
+                        "Furthermore, we have evaluated current benchmarks and assessment protocols and provided an analysis of 68 publicly available datasets to assess the performance of LLM-based agents in various tasks.",
+                        "Keywords Large language models · Multi-agents · Reasoning · Evaluation",
+                        "1 Introduction",
+                        "We investigate the architectural foundations that enable agent-like behavior in LLMs, analyze how they interact with external tools, discuss the key limitations of current approaches, and highlight the remaining open challenges.",
+                        "Our key contributions are summarized as follows.",
+                        "● We conduct a comprehensive review of recent advancements in using LLMs as agents and tool users, with an explicit taxonomy that describes their architectures, frameworks, and interaction paradigms.",
+                        "2 Related works",
+                        "3 Methodology",
+                        "This study uses a clear and organized methodology to explore the evolving field of LLM agents.",
+                        "RQ1 looks at the basic structures and training methods that help LLMs evolve from passive language models to active agents.",
+                        "RQ2: How do LLMs interface with external tools, and what frameworks or paradigms govern this interaction?",
+                        "4 Baseline LLMs",
+                        "9 Evaluation and Benchmarks",
+                        "9.1 Task-oriented and interactive benchmarks Evaluating the capabilities of LLM-based agents requires a shift from static language metrics to dynamic benchmarks that focus on task performance and interactivity in complex environments.",
+                        "10 Discussion",
+                        "We identify fundamental challenges, including alignment, reliability, and generalization, and outline promising research avenues to advance the robustness and intelligence of LLM agents.",
+                        "References",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = ghpf_wiki.ingest_sources(vault, [str(source)], ocr_provider="none", paper_insight=False)
+
+            self.assertEqual(result["skipped"], [])
+            self.assertEqual(len(result["paper_postprocess"]), 1)
+            paper_result = result["paper_postprocess"][0]
+            self.assertEqual(paper_result["title"], "From language to action: a review of large language models as autonomous agents and tool users")
+            self.assertEqual(paper_result["doi"], "https://doi.org/10.1007/s10462-025-11471-9")
+            self.assertIn("Sadia Sultana Chowa", paper_result["authors"])
+
+            paper_page = vault / paper_result["paper_page"]
+            paper_card = vault / paper_result["paper_card"]
+            paper_text = paper_page.read_text(encoding="utf-8")
+            card_text = paper_card.read_text(encoding="utf-8")
+
+            self.assertIn("# Paper: From language to action: a review of large language models as autonomous agents and tool users", paper_text)
+            self.assertIn("- EN: This review examines recent developments", paper_text)
+            self.assertIn("  KR: 이 리뷰는 LLM을 자율 에이전트", paper_text)
+            self.assertIn("## Abstract Summary", paper_text)
+            self.assertNotIn("[[Paper Insight]]", paper_text)
+            self.assertIn("Paper insight: generated under `wiki/syntheses/` after indexing.", paper_text)
+            self.assertIn("## Problem", card_text)
+            self.assertIn("  KR:", card_text)
+            self.assertNotIn("EN: EN:", card_text)
+
     def test_source_curate_repairs_existing_source_note(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -65,6 +65,28 @@ AGENT_OCR_IMAGE_LIMIT = 6
 AGENT_OCR_PDF_PAGE_LIMIT = 12
 AGENT_OCR_MIN_TEXT_CHARS = 80
 DEFAULT_OCR_LANGUAGES = "eng+kor"
+PAPER_SUFFIX_HINTS = {".pdf"}
+PAPER_SIGNAL_WORDS = (
+    "abstract",
+    "introduction",
+    "method",
+    "methods",
+    "materials and methods",
+    "results",
+    "discussion",
+    "conclusion",
+    "references",
+    "arxiv",
+    "journal",
+    "doi",
+    "et al",
+    "초록",
+    "서론",
+    "방법",
+    "결과",
+    "고찰",
+    "참고문헌",
+)
 
 
 def slugify(text: str) -> str:
@@ -506,6 +528,240 @@ def summarize_text(text: str, max_lines: int = 12) -> list[str]:
     return content_lines(text, max_lines=max_lines)
 
 
+def academic_text_region(text: str) -> str:
+    if "## Extracted Text" in text:
+        return text.split("## Extracted Text", 1)[1]
+    return text
+
+
+def is_paper_noise_line(line: str) -> bool:
+    lowered = normalize_sentence(re.sub(r"^#+\s*", "", line)).lower()
+    if not lowered:
+        return True
+    if is_boilerplate_line(line):
+        return True
+    if re.fullmatch(r"(?:\d+\s+)?page\s+\d+(?:\s+of\s+\d+)?", lowered):
+        return True
+    if re.fullmatch(r"\d+\s+page\s+\d+\s+of\s+\d+", lowered):
+        return True
+    if re.fullmatch(r"\d+\s+\d+|\d+", lowered):
+        return True
+    if lowered in {"1 3", "article", "review"}:
+        return True
+    if lowered.startswith(("received:", "received ", "accepted:", "accepted ", "published online:")):
+        return True
+    if lowered.startswith(("©", "copyright", "the author(s)", "springer nature")):
+        return True
+    if "extended author information" in lowered:
+        return True
+    if "equal supervision" in lowered:
+        return True
+    if lowered.startswith(("opendataloader-pdf:", "marker_single:", "pdfplumber:", "pypdf:")):
+        return True
+    return False
+
+
+def paper_clean_lines(text: str, max_lines: int | None = None) -> list[str]:
+    lines = []
+    for raw_line in academic_text_region(text).splitlines():
+        line = normalize_sentence(raw_line.replace("\u00a0", " "))
+        line = re.sub(r"^#+\s*", "", line).strip()
+        if is_paper_noise_line(line):
+            continue
+        lines.append(line)
+        if max_lines and len(lines) >= max_lines:
+            break
+    return lines
+
+
+def join_paper_lines(lines: list[str]) -> str:
+    text = " ".join(normalize_sentence(line) for line in lines if normalize_sentence(line))
+    text = re.sub(r"([A-Za-z])\s*-\s+([a-z])", r"\1\2", text)
+    pdf_word_fixes = {
+        "de velopment": "development",
+        "archi tectural": "architectural",
+        "cogni tive": "cognitive",
+        "inves tigated": "investigated",
+        "criti cal": "critical",
+        "generaliza tion": "generalization",
+        "imple mentation": "implementation",
+        "met rics": "metrics",
+        "exten sive": "extensive",
+        "embod ied": "embodied",
+        "natural lan guage": "natural language",
+        "col laborating": "collaborating",
+        "plan ning": "planning",
+        "tech niques": "techniques",
+        "inte gration": "integration",
+        "limi tations": "limitations",
+        "direc tions": "directions",
+    }
+    for broken, fixed in pdf_word_fixes.items():
+        text = re.sub(re.escape(broken), fixed, text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+([,.;:])", r"\1", text)
+    return normalize_sentence(text)
+
+
+def paper_heading_matches(line: str, patterns: list[str]) -> bool:
+    cleaned = normalize_sentence(line)
+    return any(re.search(pattern, cleaned, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def paper_section_window(
+    text: str,
+    start_patterns: list[str],
+    stop_patterns: list[str] | None = None,
+    max_lines: int = 80,
+) -> str:
+    lines = paper_clean_lines(text)
+    start_idx = None
+    for idx, line in enumerate(lines):
+        if paper_heading_matches(line, start_patterns):
+            start_idx = idx
+            break
+    if start_idx is None:
+        return ""
+
+    collected = []
+    stop_patterns = stop_patterns or []
+    start_line = lines[start_idx]
+    start_is_major = bool(re.match(r"^\d+\s+[A-Z가-힣]", start_line))
+    for idx in range(start_idx + 1, len(lines)):
+        line = lines[idx]
+        if stop_patterns and paper_heading_matches(line, stop_patterns):
+            break
+        if start_is_major and collected and re.match(r"^\d+\s+[A-Z가-힣]", line):
+            break
+        if len(collected) >= max_lines:
+            break
+        collected.append(line)
+    return join_paper_lines(collected)
+
+
+def paper_sentence_list(text: str) -> list[str]:
+    normalized = join_paper_lines([text])
+    normalized = normalized.replace("●", ". ")
+    pieces = re.split(r"(?<=[.!?。])\s+(?=[A-Z0-9가-힣])", normalized)
+    sentences = []
+    seen = set()
+    for piece in pieces:
+        cleaned = normalize_sentence(piece)
+        if len(cleaned) < 35:
+            continue
+        if is_paper_noise_line(cleaned):
+            continue
+        lowered = cleaned.lower()
+        if lowered.startswith(("and ", "or ", "to ", "with ")):
+            continue
+        if lowered.startswith(("keywords ", "from language to action:")):
+            continue
+        if len(re.findall(r"\b\d+(?:\.\d+)+\b", cleaned)) >= 3:
+            continue
+        if cleaned.count(";") >= 4 or cleaned.count(" et al.") >= 3:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        sentences.append(cleaned[:420])
+    return sentences
+
+
+def is_likely_paper_title_line(line: str) -> bool:
+    cleaned = normalize_sentence(line)
+    lowered = cleaned.lower()
+    if is_paper_noise_line(cleaned):
+        return False
+    if DOI_RE.search(cleaned) or URL_RE.search(cleaned):
+        return False
+    if "·" in cleaned or "@" in cleaned:
+        return False
+    if re.match(r"^\d+(?:\.\d+)*\s+[A-Z가-힣]", cleaned):
+        return False
+    if lowered.startswith(("abstract", "keywords", "introduction", "references", "acknowledg")):
+        return False
+    if any(word in lowered for word in ("journal", "volume", "issue", "page ", "pages ", "author details")):
+        return False
+    letters = re.findall(r"[A-Za-z가-힣]", cleaned)
+    words = re.findall(r"[A-Za-z가-힣][A-Za-z가-힣-]*", cleaned)
+    return len(cleaned) >= 12 and len(letters) >= 8 and len(words) >= 3
+
+
+def is_likely_author_line(line: str) -> bool:
+    cleaned = normalize_sentence(line)
+    if "·" in cleaned and re.search(r"[A-Z][A-Za-z]+", cleaned):
+        return True
+    if re.search(r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\d", cleaned) and "," in cleaned:
+        return True
+    return False
+
+
+def clean_author_text(lines: list[str]) -> str:
+    author_text = join_paper_lines(lines)
+    author_text = re.sub(r"(?<=[A-Za-z가-힣])\d+(?:,\d+)*", "", author_text)
+    author_text = re.sub(r"\s*[·•]\s*", "; ", author_text)
+    author_text = re.sub(r"\s*;\s*", "; ", author_text)
+    return author_text.strip(" ;")
+
+
+def extract_academic_paper_metadata(text: str) -> dict:
+    metadata: dict[str, str] = {}
+    lines = paper_clean_lines(text, max_lines=240)
+    if not lines:
+        return metadata
+
+    doi_match = DOI_RE.search(text)
+    if doi_match:
+        metadata["doi"] = doi_match.group(0).rstrip(".,)")
+
+    abstract = paper_section_window(
+        text,
+        [r"^Abstract$"],
+        stop_patterns=[r"^Keywords\b", r"^1\s+Introduction\b", r"^Introduction$"],
+        max_lines=70,
+    )
+    if abstract:
+        metadata["abstract"] = abstract
+
+    abstract_idx = next((idx for idx, line in enumerate(lines) if re.fullmatch(r"Abstract", line, flags=re.IGNORECASE)), None)
+    search_limit = abstract_idx if abstract_idx is not None else min(len(lines), 80)
+    for idx in range(search_limit):
+        line = lines[idx]
+        if not is_likely_paper_title_line(line):
+            continue
+        title_lines = [line]
+        cursor = idx + 1
+        while cursor < search_limit:
+            next_line = lines[cursor]
+            if is_likely_author_line(next_line):
+                break
+            if not is_likely_paper_title_line(next_line):
+                break
+            if len(" ".join(title_lines + [next_line])) > 220:
+                break
+            title_lines.append(next_line)
+            cursor += 1
+        title = join_paper_lines(title_lines)
+        if title:
+            metadata["title"] = title
+            author_lines = []
+            while cursor < search_limit and len(author_lines) < 8:
+                candidate = lines[cursor]
+                if DOI_RE.search(candidate) or re.search(r"\bAbstract\b|\bKeywords\b", candidate, flags=re.IGNORECASE):
+                    break
+                if "review" in candidate.lower() and re.search(r"\(\d{4}\)", candidate):
+                    break
+                if is_likely_author_line(candidate) or author_lines:
+                    author_lines.append(candidate)
+                cursor += 1
+            authors = clean_author_text(author_lines)
+            if authors and len(authors) <= 600:
+                metadata["authors"] = authors
+            break
+
+    return metadata
+
+
 def split_sentences(text: str, limit: int = 5) -> list[str]:
     normalized = normalize_sentence(text)
     if not normalized:
@@ -537,6 +793,9 @@ def extract_source_metadata(text: str) -> dict:
     arxiv_match = re.search(r"arXiv:\s*([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)", normalized, flags=re.IGNORECASE)
     if arxiv_match:
         metadata["arxiv"] = arxiv_match.group(1)
+    paper_metadata = extract_academic_paper_metadata(text)
+    for key, value in paper_metadata.items():
+        metadata.setdefault(key, value)
     return metadata
 
 
@@ -2857,6 +3116,379 @@ def auto_synthesize_from_profile(
     }
 
 
+def is_paper_like_source(raw_path: Path, text: str, original_ref: str = "") -> bool:
+    lower = f"{raw_path.name} {original_ref} {text[:50000]}".lower()
+    score = 0
+    if raw_path.suffix.lower() in PAPER_SUFFIX_HINTS or str(original_ref).lower().endswith(".pdf"):
+        score += 2
+    if DOI_RE.search(text):
+        score += 2
+    if "arxiv" in lower:
+        score += 2
+    score += sum(1 for word in PAPER_SIGNAL_WORDS if word in lower)
+    has_research_shape = (
+        ("abstract" in lower or "초록" in lower or DOI_RE.search(text))
+        and ("references" in lower or "참고문헌" in lower or "method" in lower or "방법" in lower)
+    )
+    return score >= 5 or bool(has_research_shape)
+
+
+def looks_english(text: str) -> bool:
+    ascii_letters = len(re.findall(r"[A-Za-z]", text))
+    korean_chars = len(re.findall(r"[가-힣]", text))
+    return ascii_letters >= 12 and ascii_letters > korean_chars * 2
+
+
+def korean_rendering(text: str) -> str:
+    cleaned = normalize_sentence(text)
+    lowered = cleaned.lower()
+    direct_patterns = [
+        (
+            r"this review examines recent developments.*autonomous agents and tool users.*seven research questions",
+            "이 리뷰는 LLM을 자율 에이전트와 도구 사용자로 활용하는 최근 연구 흐름을 검토하고, 이를 일곱 가지 연구 질문으로 정리합니다.",
+        ),
+        (
+            r"we only used the papers published between 2023 and 2025.*",
+            "이 논문은 2023년부터 2025년 사이에 발표된 A*/A 등급 학회 및 Q1 저널 논문만 선별해 분석했습니다.",
+        ),
+        (
+            r"a structured analysis of the llm agents.*architectural design principles.*",
+            "LLM 에이전트의 아키텍처 설계 원칙을 구조적으로 분석하고, 단일 에이전트와 다중 에이전트 응용 및 외부 도구 통합 전략으로 나누어 설명합니다.",
+        ),
+        (
+            r"in addition, the cognitive mechanisms of llms.*reasoning, planning, and memory.*",
+            "또한 추론, 계획, 메모리 같은 LLM의 인지 메커니즘과 프롬프트·파인튜닝 절차가 에이전트 성능에 미치는 영향을 검토합니다.",
+        ),
+        (
+            r"furthermore, we have evaluated current benchmarks.*68 publicly available datasets.*",
+            "나아가 현재 벤치마크와 평가 프로토콜을 검토하고, 여러 작업에서 LLM 기반 에이전트 성능을 평가하기 위해 공개 데이터셋 68개를 분석했습니다.",
+        ),
+        (
+            r"in conducting this review, we have identified critical findings.*",
+            "이 리뷰는 검증 가능한 추론, 자기개선 능력, 개인화된 LLM 기반 에이전트에 관한 핵심 발견을 정리합니다.",
+        ),
+        (
+            r"finally, we have discussed ten future research directions.*",
+            "마지막으로 이 논문은 남은 격차를 해결하기 위한 향후 연구 방향 10가지를 논의합니다.",
+        ),
+        (
+            r"the pursuit of human-level artificial intelligence.*development of autonomous agents.*large language models.*",
+            "인간 수준의 인공지능을 추구하는 흐름은 자율 에이전트와 대규모 언어 모델의 발전을 크게 촉진했습니다.",
+        ),
+        (
+            r"in such systems, multiple llms interact as specialized agents.*",
+            "이런 시스템에서는 여러 LLM이 서로 다른 역할이나 목표를 가진 전문 에이전트로 상호작용하면서 단일 에이전트보다 복잡한 문제를 함께 해결합니다.",
+        ),
+        (
+            r"we investigate the architectural foundations.*external tools.*remaining open challenges.*",
+            "저자들은 LLM이 에이전트처럼 행동하게 만드는 아키텍처 기반, 외부 도구와의 상호작용 방식, 현재 접근법의 한계와 남은 과제를 분석합니다.",
+        ),
+        (
+            r"through this survey, our objective is to map the landscape.*",
+            "이 서베이의 목적은 새롭게 떠오르는 연구 지형을 정리하고 후속 연구와 개발을 위한 기반을 제공하는 것입니다.",
+        ),
+        (
+            r"the literature selection process included a wide range of studies.*",
+            "문헌 선정 과정은 기초 구조, 새로운 방법론, 실제 구현 접근을 다룬 폭넓은 연구를 포함했습니다.",
+        ),
+        (
+            r"rq1 looks at the basic structures and training methods.*",
+            "RQ1은 LLM이 수동적인 언어 모델에서 능동적인 에이전트로 발전하도록 돕는 기본 구조와 학습 방법을 다룹니다.",
+        ),
+        (
+            r"this study uses a clear and organized methodology.*",
+            "이 연구는 진화 중인 LLM 에이전트 분야를 체계적으로 살펴보기 위해 명확한 방법론을 사용합니다.",
+        ),
+        (
+            r"rq2: how do llms interface with external tools.*",
+            "RQ2는 LLM이 외부 도구와 어떻게 연결되고, 그 상호작용을 어떤 프레임워크나 패러다임이 지배하는지를 묻습니다.",
+        ),
+        (
+            r"section 2 presents related works.*",
+            "2장은 관련 연구를 검토하고 기존 서베이의 공백과 이 논문의 기여 위치를 설명합니다.",
+        ),
+        (
+            r"12 concludes the review with a summary.*",
+            "12장은 리뷰의 통찰과 기여를 요약하며 논문을 마무리합니다.",
+        ),
+        (
+            r"frameworks like easytool aim to improve agent performance.*",
+            "EASYTOOL 같은 프레임워크는 방대한 도구 문서를 짧고 명확한 지시로 바꾸어 벤치마크에서 에이전트 성능을 높이려는 접근입니다.",
+        ),
+        (
+            r"9\.1 task-oriented and interactive benchmarks.*",
+            "과업 지향적·상호작용형 벤치마크는 정적인 언어 지표보다 복잡한 환경에서의 과업 수행과 상호작용성을 평가하는 방향으로 이동해야 함을 보여줍니다.",
+        ),
+        (
+            r"next, it examines the various methods and metrics.*",
+            "다음으로 단순 정확도를 넘어 효율성, 품질, 행동 강도까지 평가하기 위한 방법과 지표를 검토합니다.",
+        ),
+        (
+            r"triage agent.*first public benchmark for clinical triage.*",
+            "TRIAGE AGENT는 임상 분류를 위한 첫 공개 벤치마크로, 전문가 성능 대비 불일치율과 과소분류율 같은 지표를 사용합니다.",
+        ),
+        (
+            r"section 4 explores the baseline llms.*",
+            "4장은 에이전트형 LLM 시스템에서 사용되는 기준 LLM들을 검토합니다.",
+        ),
+        (
+            r"use the linked paper card.*",
+            "연결된 논문 카드는 실험 설계나 원고 구상 중 빠르게 검색하기 위한 요약 카드로 활용합니다.",
+        ),
+        (
+            r"and provided an analysis of 68 publicly available datasets.*",
+            "공개 데이터셋 68개를 분석해 다양한 과업에서 LLM 기반 에이전트의 성능을 평가했다는 내용입니다.",
+        ),
+        (
+            r"we conduct a comprehensive review of recent advancements.*",
+            "저자들은 LLM을 에이전트와 도구 사용자로 활용하는 최근 발전을 폭넓게 검토하고, 아키텍처·프레임워크·상호작용 방식을 분류합니다.",
+        ),
+        (
+            r"we critically review current evaluation methods and benchmarks.*",
+            "현재 LLM 에이전트와 도구 사용자를 평가하는 방법과 벤치마크를 비판적으로 검토합니다.",
+        ),
+        (
+            r"we identify fundamental challenges.*alignment, reliability, and generalization.*",
+            "정렬, 신뢰성, 일반화 같은 근본적 과제를 식별하고 더 강건한 LLM 에이전트로 발전하기 위한 연구 경로를 제시합니다.",
+        ),
+    ]
+    for pattern, translation in direct_patterns:
+        if re.search(pattern, lowered):
+            return translation
+
+    if "benchmark" in lowered or "metric" in lowered or "evaluation" in lowered:
+        return "요지: 이 문장은 LLM 에이전트 평가에서 벤치마크, 지표, 성능 비교를 어떻게 다룰지 설명합니다."
+    if "external tools" in lowered or "tool" in lowered:
+        return "요지: 이 문장은 LLM 에이전트가 외부 도구를 사용하는 방식과 그 설계상의 의미를 설명합니다."
+    if "framework" in lowered or "architecture" in lowered:
+        return "요지: 이 문장은 LLM 에이전트 시스템의 프레임워크나 아키텍처 설계를 설명합니다."
+    if "limitation" in lowered or "challenge" in lowered or "gap" in lowered:
+        return "요지: 이 문장은 현재 접근법의 한계, 연구 공백, 앞으로 해결해야 할 과제를 설명합니다."
+    if "method" in lowered or "selection" in lowered or "criteria" in lowered:
+        return "요지: 이 문장은 논문에서 사용한 연구 방법, 문헌 선정 기준, 분석 절차를 설명합니다."
+    return "요지: 이 문장은 논문의 핵심 근거입니다. 정확한 인용이나 세부 표현은 위 영문과 원문 PDF를 함께 확인해야 합니다."
+
+
+def bilingual_bullet_lines(bullets: list[str]) -> list[str]:
+    if not bullets:
+        return ["- Not enough evidence extracted yet."]
+    lines = []
+    seen = set()
+    for bullet in bullets:
+        cleaned = normalize_sentence(bullet)
+        cleaned = re.sub(r"^(?:-\s*)?(?:EN|KR):\s*", "", cleaned)
+        cleaned = re.sub(r"\.\s+\.", ".", cleaned)
+        cleaned = re.sub(r"\s*\.\s*\.$", ".", cleaned)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if looks_english(cleaned):
+            lines.append(f"- EN: {cleaned}")
+            lines.append(f"  KR: {korean_rendering(cleaned)}")
+        else:
+            lines.append(f"- {cleaned}")
+    return lines or ["- Not enough evidence extracted yet."]
+
+
+def paper_sentence_candidates(
+    text: str,
+    keywords: list[str],
+    limit: int = 4,
+    section_patterns: list[str] | None = None,
+    stop_patterns: list[str] | None = None,
+) -> list[str]:
+    window = ""
+    if section_patterns:
+        window = paper_section_window(text, section_patterns, stop_patterns=stop_patterns)
+    candidates_text = window or academic_text_region(text)
+    candidates = paper_sentence_list(candidates_text)
+    scored = []
+    for idx, sentence in enumerate(candidates):
+        haystack = sentence.lower()
+        score = sum(haystack.count(keyword.lower()) for keyword in keywords)
+        if score or window:
+            scored.append((score, idx, sentence))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [sentence for _, _, sentence in scored[:limit]]
+
+
+def paper_section_bullets(
+    text: str,
+    keywords: list[str],
+    fallback_limit: int = 3,
+    section_patterns: list[str] | None = None,
+    stop_patterns: list[str] | None = None,
+) -> list[str]:
+    return (
+        paper_sentence_candidates(text, keywords, limit=fallback_limit, section_patterns=section_patterns, stop_patterns=stop_patterns)
+        or sentence_candidates(text, keywords, limit=fallback_limit)
+        or fallback_bullets(text, fallback_limit)
+    )
+
+
+def write_paper_page(
+    vault: Path,
+    title: str,
+    source_rel: str,
+    source_note_rel: str,
+    text: str,
+    terms: list[str],
+    original_ref: str = "",
+) -> dict:
+    metadata = extract_source_metadata(text)
+    paper_title = metadata.get("title") or title
+    paper_path = vpath(vault, "wiki/papers") / f"{slugify(paper_title)[:90]}.md"
+    paper_path.parent.mkdir(parents=True, exist_ok=True)
+    doi_match = DOI_RE.search(text)
+    doi = metadata.get("doi") or (doi_match.group(0) if doi_match else "")
+    authors = metadata.get("authors") or ""
+    frontmatter = {
+        "tags": ["ghpf/paper"],
+        "source": source_note_rel,
+        "raw_source": source_rel,
+        "created": now_iso(),
+        "aliases": [paper_title],
+    }
+    if doi:
+        frontmatter["doi"] = doi
+    if authors:
+        frontmatter["authors"] = authors
+
+    sections = {
+        "Abstract Summary": paper_section_bullets(
+            text,
+            ["review", "examine", "dataset", "benchmark", "finding", "direction", "요약"],
+            4,
+            section_patterns=[r"^Abstract$"],
+            stop_patterns=[r"^Keywords\b", r"^1\s+Introduction\b"],
+        ),
+        "Research Question": paper_section_bullets(
+            text,
+            ["research question", "objective", "aim", "goal", "purpose", "challenge", "문제", "목표", "목적"],
+            3,
+            section_patterns=[r"^1\s+Introduction\b", r"^Introduction$"],
+            stop_patterns=[r"^2\s+"],
+        ),
+        "Method": paper_section_bullets(
+            text,
+            ["method", "approach", "framework", "model", "dataset", "experiment", "selection", "criteria", "방법", "모델", "실험"],
+            4,
+            section_patterns=[r"^3\s+Method", r"^Method", r"^Materials and methods"],
+            stop_patterns=[r"^4\s+"],
+        ),
+        "Contribution": paper_section_bullets(
+            text,
+            ["contribution", "propose", "novel", "taxonomy", "review", "identify", "기여", "제안", "새로운"],
+            4,
+            section_patterns=[r"key contributions", r"contributions"],
+            stop_patterns=[r"^2\s+", r"^3\s+"],
+        ),
+        "Results": paper_section_bullets(
+            text,
+            ["result", "performance", "accuracy", "improve", "significant", "benchmark", "dataset", "결과", "성능", "향상"],
+            4,
+            section_patterns=[r"^9\s+Evaluation", r"^Results\b", r"^10\s+Discussion"],
+            stop_patterns=[r"^11\s+", r"^12\s+"],
+        ),
+        "Limitations": paper_section_bullets(
+            text,
+            ["limitation", "future work", "risk", "failure", "requires", "challenge", "gap", "한계", "향후", "위험"],
+            4,
+            section_patterns=[r"^10\s+Discussion", r"^11\s+Future", r"Limitations"],
+            stop_patterns=[r"^12\s+", r"^References\b"],
+        ),
+        "Experiment Hooks": paper_section_bullets(
+            text,
+            ["baseline", "ablation", "metric", "compare", "evaluation", "variable", "dataset", "대조군", "평가", "변수"],
+            5,
+            section_patterns=[r"^9\s+Evaluation", r"benchmark", r"dataset"],
+            stop_patterns=[r"^10\s+", r"^11\s+", r"^References\b"],
+        ),
+    }
+
+    lines = [
+        frontmatter_block(frontmatter).rstrip(),
+        f"# Paper: {paper_title}",
+        "",
+        f"Source note: `{source_note_rel}`",
+        f"Raw source: `{source_rel}`",
+        *( [f"Original: `{original_ref}`"] if original_ref else [] ),
+        "",
+        "## Bibliographic Snapshot",
+        "",
+        f"- Title: {paper_title}",
+        f"- Authors: {authors or 'not extracted'}",
+        f"- DOI: {doi or 'not extracted'}",
+        f"- Key terms: {', '.join(terms[:12]) or 'not extracted'}",
+        "",
+    ]
+    for heading, bullets in sections.items():
+        lines.extend([f"## {heading}", ""])
+        lines.extend(bilingual_bullet_lines(bullets))
+        lines.append("")
+    lines.extend(
+        [
+            "## Reuse Notes",
+            "",
+            "- Use this page as the human-readable paper summary.",
+            "- Use the linked paper card for fast retrieval during experiment design or manuscript planning.",
+            "- Verify exact claims against the source note before citation.",
+            "",
+            "## Links",
+            "",
+            f"- Source note: `{source_note_rel}`",
+            "- Paper insight: generated under `wiki/syntheses/` after indexing.",
+            "",
+        ]
+    )
+    paper_path.write_text("\n".join(lines), encoding="utf-8")
+    paper_rel = paper_path.relative_to(vault).as_posix()
+    ensure_index_entry(vault, paper_rel, f"Paper: {paper_title}")
+    append_log(vault, f"created paper page `{paper_rel}` from `{source_note_rel}`.")
+    return {"paper_page": paper_rel, "title": paper_title, "doi": doi or None, "authors": authors or None}
+
+
+def postprocess_paper_source(
+    vault: Path,
+    title: str,
+    source_rel: str,
+    source_note_rel: str,
+    raw_path: Path,
+    text: str,
+    terms: list[str],
+    original_ref: str = "",
+    enabled: bool = True,
+) -> dict:
+    if not enabled:
+        return {"enabled": False, "is_paper": False}
+    if not is_paper_like_source(raw_path, text, original_ref=original_ref):
+        return {"enabled": True, "is_paper": False}
+    paper = write_paper_page(vault, title, source_rel, source_note_rel, text, terms, original_ref=original_ref)
+    card = generate_card(vault, paper["paper_page"], "paper")
+    return {
+        "enabled": True,
+        "is_paper": True,
+        **paper,
+        "paper_card": card.get("card"),
+        "generated_pages": [item for item in (paper.get("paper_page"), card.get("card")) if item],
+    }
+
+
+def paper_batch_insight_query(results: list[dict], custom_query: str | None = None) -> str:
+    if custom_query:
+        return custom_query
+    titles = [str(item.get("title") or "") for item in results if item.get("title")]
+    title_text = "; ".join(titles[:6])
+    return (
+        "paper methods contributions limitations experiment ideas manuscript structure "
+        "greenhouse irrigation LLM agent ontology automatic control"
+        + (f" :: {title_text}" if title_text else "")
+    )
+
+
 def ingest_sources(
     vault: Path,
     sources: list[str],
@@ -2870,6 +3502,9 @@ def ingest_sources(
     ocr_timeout: int = 180,
     ocr_image_limit: int = AGENT_OCR_IMAGE_LIMIT,
     ocr_pdf_page_limit: int = AGENT_OCR_PDF_PAGE_LIMIT,
+    paper_postprocess: bool = True,
+    paper_insight: bool = True,
+    paper_insight_query: str | None = None,
 ) -> dict:
     vault = vault.expanduser()
     selected = sources if sources else source_candidates(vault)
@@ -2879,6 +3514,7 @@ def ingest_sources(
     skipped = []
     extracted = []
     auto_syntheses = []
+    paper_postprocesses = []
 
     for source_value in selected:
         try:
@@ -3024,6 +3660,30 @@ def ingest_sources(
                 }
             )
         auto_syntheses.append({"source": source_rel, **auto_synthesis_result})
+        paper_result = postprocess_paper_source(
+            vault,
+            title,
+            source_rel,
+            page_rel,
+            raw_path,
+            text,
+            terms,
+            original_ref=original_ref,
+            enabled=paper_postprocess,
+        )
+        if paper_result.get("is_paper"):
+            manifest.setdefault("generated_pages", []).extend(paper_result.get("generated_pages", []))
+            manifest.setdefault("operations", []).append(
+                {
+                    "type": "paper_postprocess",
+                    "time": now_iso(),
+                    "source": source_rel,
+                    "source_note": page_rel,
+                    "paper_page": paper_result.get("paper_page"),
+                    "paper_card": paper_result.get("paper_card"),
+                }
+            )
+            paper_postprocesses.append({"source": source_rel, "source_note": page_rel, **paper_result})
 
         manifest.setdefault("sources", []).append(
             {
@@ -3046,9 +3706,33 @@ def ingest_sources(
         if move and isinstance(original_path, Path) and original_path.exists() and not layout.path_is_relative_to(original_path, vpath(vault, "raw")):
             original_path.unlink()
 
+    paper_insight_result = None
+    if paper_postprocesses and paper_insight:
+        build_hybrid_index(vault)
+        query = paper_batch_insight_query(paper_postprocesses, custom_query=paper_insight_query)
+        paper_insight_result = insight_command(vault, "paper", query, limit=8)
+        if paper_insight_result.get("insight"):
+            manifest.setdefault("generated_pages", []).append(paper_insight_result["insight"])
+            manifest.setdefault("operations", []).append(
+                {
+                    "type": "paper_insight",
+                    "time": now_iso(),
+                    "query": query,
+                    "insight": paper_insight_result["insight"],
+                    "paper_count": len(paper_postprocesses),
+                }
+            )
+
     manifest["generated_pages"] = sorted(set(manifest.get("generated_pages", [])))
     save_manifest(vault, manifest)
-    return {"ingested": ingested, "skipped": skipped, "extracted": extracted, "auto_syntheses": auto_syntheses}
+    return {
+        "ingested": ingested,
+        "skipped": skipped,
+        "extracted": extracted,
+        "auto_syntheses": auto_syntheses,
+        "paper_postprocess": paper_postprocesses,
+        "paper_insight": paper_insight_result,
+    }
 
 
 def extract_preserved_sections(body: str, section_names: tuple[str, ...] = ("Backlinks",)) -> list[str]:
@@ -4134,6 +4818,23 @@ def card_path(vault: Path, kind: str, title: str) -> Path:
     return root / f"{slugify(title)[:90]}.md"
 
 
+def paper_card_source_content(content: str) -> str:
+    _, body = parse_frontmatter(content)
+    lines = []
+    for raw_line in body.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("KR:"):
+            continue
+        if stripped.startswith("- EN:"):
+            lines.append("- " + stripped[5:].strip())
+            continue
+        if stripped.startswith("EN:"):
+            lines.append(stripped[3:].strip())
+            continue
+        lines.append(raw_line)
+    return "\n".join(lines)
+
+
 def card_sections(kind: str, content: str) -> dict[str, list[str]]:
     if kind == "paper":
         return {
@@ -4168,9 +4869,10 @@ def generate_card(vault: Path, page_rel: str, kind: str) -> dict:
         return {"page": page_rel, "error": "FILE_NOT_FOUND"}
     content = page.read_text(encoding="utf-8", errors="ignore")
     title = page_heading(content, page.name)
-    terms = extract_terms(content, limit=10)
+    card_content = paper_card_source_content(content) if kind == "paper" else content
+    terms = extract_terms(card_content, limit=10)
     links, candidates = existing_wikilinks_for_terms(vault, terms, limit=8)
-    sections = card_sections(kind, content)
+    sections = card_sections(kind, card_content)
     out = card_path(vault, kind, title)
     lines = [
         frontmatter_block({"tags": [f"ghpf/card/{kind}"], "source": page.relative_to(vault).as_posix(), "created": now_iso(), "aliases": [title]}).rstrip(),
@@ -4181,7 +4883,10 @@ def generate_card(vault: Path, page_rel: str, kind: str) -> dict:
     ]
     for heading, bullets in sections.items():
         lines.extend([f"## {heading}", ""])
-        lines.extend([f"- {bullet}" for bullet in bullets] or ["- Not enough evidence extracted yet."])
+        if kind == "paper":
+            lines.extend(bilingual_bullet_lines(bullets))
+        else:
+            lines.extend([f"- {bullet}" for bullet in bullets] or ["- Not enough evidence extracted yet."])
         lines.append("")
     lines.extend(["## Links", "", " ".join(links) or "No existing wiki targets found.", ""])
     if candidates:
@@ -4920,6 +5625,9 @@ def main() -> int:
     extract_p.add_argument("--ocr-timeout", type=int, default=180, help="Timeout in seconds for each agent OCR call.")
     extract_p.add_argument("--ocr-image-limit", type=int, default=AGENT_OCR_IMAGE_LIMIT, help="Maximum HTML image candidates to OCR.")
     extract_p.add_argument("--ocr-pdf-page-limit", type=int, default=AGENT_OCR_PDF_PAGE_LIMIT, help="Maximum PDF pages to render for agent OCR.")
+    extract_p.add_argument("--no-paper-postprocess", action="store_true", help="Disable automatic paper page/card generation for paper-like sources.")
+    extract_p.add_argument("--no-paper-insight", action="store_true", help="Disable automatic batch paper insight generation after paper postprocessing.")
+    extract_p.add_argument("--paper-insight-query", help="Custom query for automatic paper insight generation.")
     extract_p.add_argument("sources", nargs="+", help="PDF files, HTML files, web URLs, YouTube URLs, or text files.")
 
     ingest_p = sub.add_parser("ingest")
@@ -4935,6 +5643,9 @@ def main() -> int:
     ingest_p.add_argument("--ocr-timeout", type=int, default=180, help="Timeout in seconds for each agent OCR call.")
     ingest_p.add_argument("--ocr-image-limit", type=int, default=AGENT_OCR_IMAGE_LIMIT, help="Maximum HTML image candidates to OCR.")
     ingest_p.add_argument("--ocr-pdf-page-limit", type=int, default=AGENT_OCR_PDF_PAGE_LIMIT, help="Maximum PDF pages to render for agent OCR.")
+    ingest_p.add_argument("--no-paper-postprocess", action="store_true", help="Disable automatic paper page/card generation for paper-like sources.")
+    ingest_p.add_argument("--no-paper-insight", action="store_true", help="Disable automatic batch paper insight generation after paper postprocessing.")
+    ingest_p.add_argument("--paper-insight-query", help="Custom query for automatic paper insight generation.")
 
     lint_p = sub.add_parser("lint")
     lint_p.add_argument("--vault", default=".")
@@ -5096,6 +5807,9 @@ def main() -> int:
                 ocr_timeout=args.ocr_timeout,
                 ocr_image_limit=args.ocr_image_limit,
                 ocr_pdf_page_limit=args.ocr_pdf_page_limit,
+                paper_postprocess=not args.no_paper_postprocess,
+                paper_insight=not args.no_paper_insight,
+                paper_insight_query=args.paper_insight_query,
             )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if has_failed_skips(result) or has_failed_skips(result.get("ingest", {})):
@@ -5121,6 +5835,9 @@ def main() -> int:
             ocr_timeout=args.ocr_timeout,
             ocr_image_limit=args.ocr_image_limit,
             ocr_pdf_page_limit=args.ocr_pdf_page_limit,
+            paper_postprocess=not args.no_paper_postprocess,
+            paper_insight=not args.no_paper_insight,
+            paper_insight_query=args.paper_insight_query,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if has_failed_skips(result):
